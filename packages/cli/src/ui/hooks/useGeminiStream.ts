@@ -43,6 +43,7 @@ import {
   buildToolVisibilityContext,
   UPDATE_TOPIC_TOOL_NAME,
   UPDATE_TOPIC_DISPLAY_NAME,
+  CompressionStatus,
 } from '@google/gemini-cli-core';
 import type {
   Config,
@@ -1310,11 +1311,24 @@ export const useGeminiStream = (
         ((eventValue?.newTokenCount ?? 0) / limit) * 100,
       );
 
+      // --- LOCAL FORK ADDITION (Phase 1.9) ---
+      // Distinguish hard-truncation (last-resort recovery) from normal
+      // summarization-based compression so the user knows the older history
+      // was discarded rather than summarized.
+      const isHardTruncation =
+        eventValue?.compressionStatus === CompressionStatus.HISTORY_TRUNCATED;
+      const text = isHardTruncation
+        ? `Local context overflow: dropped oldest history to fit (~${newPercentage}% used).`
+        : `Context compressed from ${originalPercentage}% to ${newPercentage}%.`;
+      const secondaryText = isHardTruncation
+        ? `Tune local.contextLimit / local.preserveFraction in /settings to compress sooner.`
+        : `Change threshold in /settings.`;
+
       addItem(
         {
           type: MessageType.INFO,
-          text: `Context compressed from ${originalPercentage}% to ${newPercentage}%.`,
-          secondaryText: `Change threshold in /settings.`,
+          text,
+          secondaryText,
           color: theme.status.warning,
           marginBottom: 1,
         } as HistoryItemInfo,
@@ -1349,6 +1363,15 @@ export const useGeminiStream = (
       if (isMoreThan25PercentUsed) {
         text +=
           ' Please try reducing the size of your message or use the `/compress` command to compress the chat history.';
+      }
+
+      // --- LOCAL FORK ADDITION (Phase 1.9) ---
+      // Recovery (force-compress + truncate) already failed by the time this
+      // event fires in local mode, so point the user at the tunables that
+      // would prevent it next time.
+      if (config.isLocalMode?.()) {
+        text +=
+          ' Local mode recovery exhausted — lower `local.contextLimit` or `local.compressionThreshold` in settings.json to compress sooner, or set `local.autoTruncateOnOverflow: true` to drop oldest history automatically.';
       }
 
       addItem({

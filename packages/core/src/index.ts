@@ -48,6 +48,12 @@ export * from './scheduler/types.js';
 export * from './scheduler/tool-executor.js';
 export * from './scheduler/policy.js';
 export * from './core/recordingContentGenerator.js';
+export * from './core/localModelDiscovery.js';
+export {
+  switchModelAcrossBoundary,
+  awaitGeneratorReady,
+} from './core/localModelBridge.js';
+export type { LocalModelBridgeConfig } from './core/localModelBridge.js';
 
 // Export Routing
 export * from './routing/routingStrategy.js';
@@ -121,6 +127,7 @@ export * from './utils/events.js';
 export * from './utils/extensionLoader.js';
 export * from './utils/package.js';
 export * from './utils/version.js';
+export * from './utils/localVersion.js';
 export * from './utils/checkpointUtils.js';
 export * from './utils/secure-browser-launcher.js';
 export * from './utils/apiConversionUtils.js';

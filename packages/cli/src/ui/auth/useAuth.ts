@@ -91,6 +91,20 @@ export const useAuthCommand = (
         return;
       }
 
+      const localUrl =
+        process.env['GEMINI_LOCAL_URL'] || settings.merged.local?.url;
+      if (localUrl) {
+        try {
+          await config.refreshAuth(AuthType.LOCAL);
+          debugLogger.log(`Authenticated via local LLM bypass (${localUrl}).`);
+          setAuthError(null);
+          setAuthState(AuthState.Authenticated);
+        } catch (e) {
+          onAuthError(`Failed to initialize local LLM: ${getErrorMessage(e)}`);
+        }
+        return;
+      }
+
       const authType = settings.merged.security.auth.selectedType;
       if (!authType) {
         if (process.env['GEMINI_API_KEY']) {

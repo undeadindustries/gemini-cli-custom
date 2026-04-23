@@ -12,6 +12,7 @@ import { GEMINI_DIR, makeRelative } from '../utils/paths.js';
 import { ApprovalMode } from '../policy/types.js';
 import * as snippets from './snippets.js';
 import * as legacySnippets from './snippets.legacy.js';
+import { getLocalSystemPrompt } from './snippets.local.js';
 import {
   resolvePathFromEnv,
   applySubstitutions,
@@ -103,6 +104,21 @@ export class PromptProvider {
           return `  <tool>\`${t.name}\`</tool>`;
         })
         .join('\n');
+    }
+
+    // --- Local LLM: lightweight prompt ---
+    if (
+      context.config.isLocalMode() &&
+      context.config.getLocalPromptMode() !== 'full'
+    ) {
+      return getLocalSystemPrompt(
+        {
+          sandboxEnabled: context.config.getSandboxEnabled(),
+          isInteractive: interactiveMode,
+        },
+        userMemory,
+        contextFilenames,
+      );
     }
 
     let basePrompt: string;

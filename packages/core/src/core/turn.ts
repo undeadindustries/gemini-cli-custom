@@ -183,6 +183,14 @@ export enum CompressionStatus {
 
   /** The compression was skipped due to previous failure, but content was truncated to budget */
   CONTENT_TRUNCATED,
+
+  /**
+   * --- LOCAL FORK ADDITION (Phase 1.9) ---
+   * The chat history was hard-truncated as a last resort because force
+   * compression failed or was insufficient to fit the local context window.
+   * Reuses the ChatCompressed event so no new event type is required.
+   */
+  HISTORY_TRUNCATED,
 }
 
 export interface ChatCompressionInfo {

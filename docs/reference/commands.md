@@ -234,6 +234,55 @@ Slash commands provide meta-level control over the CLI itself.
   it simpler for them to provide project-specific instructions to the Gemini
   agent.
 
+### `/local`
+
+> Fork-only command (gemini-local-cli). Configures the local LLM bypass
+> (OpenAI-compatible endpoint, e.g. vLLM on `http://127.0.0.1:8000`) and the
+> Phase 2.0 smart-context knobs.
+
+- **Description:** Open the dedicated dialog to configure the local LLM server
+  URL/model, prompt mode, context limit, compression threshold, and the other
+  local-mode context-management settings. With no sub-command, opens the dialog.
+  With a sub-command, applies the change inline and hot-reloads the content
+  generator so the change takes effect on the next turn — no CLI restart
+  required.
+- **Sub-commands:**
+  - **`show`**:
+    - **Description:** Print the current local LLM URL, model, prompt mode,
+      context limit, and timeout without opening the dialog. Also indicates
+      whether local mode is currently active.
+    - **Usage:** `/local show`
+  - **`url`**:
+    - **Description:** Set the local LLM endpoint URL and hot-reload the
+      generator. Errors (e.g. unreachable host) are surfaced inline; the value
+      is preserved on failure so you can correct it via `/local`.
+    - **Usage:** `/local url <url>` (e.g.
+      `http://127.0.0.1:8000/v1/chat/completions`)
+  - **`model`**:
+    - **Description:** Set the local LLM model name sent in requests and
+      hot-reload the generator.
+    - **Usage:** `/local model <model-name>` (e.g. `qwen3-coder` or
+      `devstral-2-medium`)
+  - **`prompt`**:
+    - **Description:** Switch the local system prompt mode without opening the
+      dialog. `lite` is the lightweight ~3–4K-char prompt tuned for local
+      models; `full` uses the upstream Gemini system prompt.
+    - **Usage:** `/local prompt <lite|full>`
+  - **`timeout`**:
+    - **Description:** Hot-reload the local LLM request timeout (milliseconds).
+      Common values: `120000` (2 min, default), `300000` (5 min), `600000` (10
+      min). Live on the next request — no restart needed.
+    - **Usage:** `/local timeout <milliseconds>` (e.g. `/local timeout 300000`)
+  - **`toolcall`** (Phase 2.0.12):
+    - **Description:** Hot-reload the content-side tool-call parser hardening
+      mode. `strict` matches only `<tool_call>...</tool_call>` wrapped blocks
+      (zero false-positive risk). `lenient` (default) also matches bare
+      `<function=...>` blocks when an orphaned `</tool_call>` closer is present
+      (recovers Nemotron 3 / Mistral 4 without breaking Qwen / Gemma / Devstral
+      24B). `loose` matches any `<function=...>` block anywhere (highest
+      recovery, has documentation-injection risk).
+    - **Usage:** `/local toolcall <strict|lenient|loose>`
+
 ### `/mcp`
 
 - **Description:** Manage configured Model Context Protocol (MCP) servers.

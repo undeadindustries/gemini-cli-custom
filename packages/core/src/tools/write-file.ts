@@ -52,6 +52,11 @@ import { detectOmissionPlaceholders } from './omissionPlaceholderDetector.js';
 import { resolveAndValidatePlanPath } from '../utils/planUtils.js';
 import { isGemini3Model } from '../config/models.js';
 import { discoverJitContext, appendJitContext } from './jit-context.js';
+// --- LOCAL FORK ADDITION (Phase 2.0): defense-in-depth import ---
+// Used by validateToolParamValues to refuse writes whose content is the
+// internal writeFileEjection sentinel (a model misinterpretation safeguard).
+import { WRITE_FILE_EJECTION_TAG } from '../context/writeFileEjection.js';
+// --- END LOCAL FORK ADDITION ---
 
 /**
  * Parameters for the WriteFile tool
@@ -559,6 +564,31 @@ export class WriteFileTool
     if (omissionPlaceholders.length > 0) {
       return "`content` contains an omission placeholder (for example 'rest of methods ...'). Provide complete file content.";
     }
+
+    // --- LOCAL FORK ADDITION (Phase 2.0): ejection-sentinel guard ---
+    // The writeFileEjection layer rewrites stale write_file functionCall
+    // payloads in chat history with a `<file_written ...>` marker to save
+    // tokens. Some models pattern-match this marker in their own context and
+    // emit it back as the `content` of new write_file calls, which would
+    // overwrite real files with marker text. Refuse those writes here so the
+    // failure surfaces to the model as a recoverable tool error instead of
+    // silent file corruption. Local mode only — the marker is never produced
+    // upstream. See packages/core/src/context/writeFileEjection.ts.
+    if (this.config.isLocalMode()) {
+      const trimmedContent = params.content.trimStart();
+      if (trimmedContent.startsWith(`<${WRITE_FILE_EJECTION_TAG} `)) {
+        return (
+          `\`content\` looks like the CLI-internal ejection marker ` +
+          `(\`<${WRITE_FILE_EJECTION_TAG} ...>\`) rather than real file ` +
+          `content. This sentinel appears in conversation history when older ` +
+          `write_file payloads have been ejected to save tokens; it is not ` +
+          `valid file content. If you need to reference the original file, ` +
+          `call read_file with the same file_path, then re-issue write_file ` +
+          `with the actual code you intend to save.`
+        );
+      }
+    }
+    // --- END LOCAL FORK ADDITION ---
 
     return null;
   }

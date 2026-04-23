@@ -74,6 +74,9 @@ export function useQuotaAndFallback({
       fallbackModel,
       error,
     ): Promise<FallbackIntent | null> => {
+      if (config.isLocalMode()) {
+        return null;
+      }
       const contentGeneratorConfig = config.getContentGeneratorConfig();
 
       let message: string;

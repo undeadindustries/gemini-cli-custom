@@ -107,6 +107,7 @@ const mockConfigInternal = {
   isInteractive: () => false,
   getDisableLLMCorrection: vi.fn(() => true),
   isPlanMode: vi.fn(() => false),
+  isLocalMode: vi.fn(() => false),
   getActiveModel: () => 'test-model',
   storage: {
     getProjectTempDir: vi.fn().mockReturnValue('/tmp/project'),
@@ -332,6 +333,59 @@ describe('WriteFileTool', () => {
       expect(invocation).toBeDefined();
       expect(invocation.params).toEqual(params);
     });
+
+    // --- LOCAL FORK ADDITION (Phase 2.0) ---
+    // Defense-in-depth guard against the writeFileEjection sentinel being
+    // pattern-matched back into a write_file call by the local model.
+    describe('writeFileEjection sentinel guard (local mode)', () => {
+      const ejectionMarker =
+        '<file_written path="/abs/path/foo.js" lines=164 tokens=1440 cached=true>';
+
+      it('should refuse content that is the ejection sentinel when in local mode', () => {
+        mockConfigInternal.isLocalMode.mockReturnValue(true);
+        const params = {
+          file_path: path.join(rootDir, 'foo.js'),
+          content: ejectionMarker,
+        };
+        expect(() => tool.build(params)).toThrow(
+          /CLI-internal ejection marker/,
+        );
+      });
+
+      it('should refuse content with leading whitespace before the sentinel', () => {
+        mockConfigInternal.isLocalMode.mockReturnValue(true);
+        const params = {
+          file_path: path.join(rootDir, 'foo.js'),
+          content: `\n   ${ejectionMarker}\n`,
+        };
+        expect(() => tool.build(params)).toThrow(
+          /CLI-internal ejection marker/,
+        );
+      });
+
+      it('should NOT trigger upstream (non-local) mode even when content matches the sentinel', () => {
+        mockConfigInternal.isLocalMode.mockReturnValue(false);
+        const params = {
+          file_path: path.join(rootDir, 'doc.html'),
+          content: ejectionMarker,
+        };
+        // No throw: upstream behavior is preserved verbatim.
+        expect(() => tool.build(params)).not.toThrow();
+      });
+
+      it('should allow legitimate content that merely contains the substring "<file_written" inside a string literal', () => {
+        mockConfigInternal.isLocalMode.mockReturnValue(true);
+        const params = {
+          file_path: path.join(rootDir, 'docs.ts'),
+          content:
+            'export const NOTE = "see <file_written tag in writeFileEjection.ts>";',
+        };
+        // Guard checks the leading non-whitespace prefix only; embedded
+        // occurrences of the substring are safe.
+        expect(() => tool.build(params)).not.toThrow();
+      });
+    });
+    // --- END LOCAL FORK ADDITION ---
   });
 
   describe('getCorrectedFileContent', () => {

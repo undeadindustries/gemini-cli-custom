@@ -31,6 +31,7 @@ import {
 import { useKeypress } from '../hooks/useKeypress.js';
 import { theme } from '../semantic-colors.js';
 import { DescriptiveRadioButtonSelect } from './shared/DescriptiveRadioButtonSelect.js';
+import { LocalModelSection } from './LocalModelSection.js';
 import { ConfigContext } from '../contexts/ConfigContext.js';
 import { useSettings } from '../contexts/SettingsContext.js';
 
@@ -358,6 +359,14 @@ export function ModelDialog({ onClose }: ModelDialogProps): React.JSX.Element {
           showNumbers={true}
         />
       </Box>
+      {config?.isLocalMode?.() && (
+        <LocalModelSection
+          localModels={config.getDiscoveredLocalModels()}
+          currentModel={preferredModel}
+          onClose={onClose}
+          persistMode={persistMode}
+        />
+      )}
       <Box marginTop={1} flexDirection="column">
         <Box>
           <Text bold color={theme.text.primary}>

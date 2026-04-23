@@ -194,4 +194,52 @@ describe('<UserIdentity />', () => {
     expect(output).not.toContain('/upgrade');
     unmount();
   });
+
+  // --- LOCAL FORK ADDITION (Phase 2.0.2) ---
+  it('should render local URL, model, context and prompt mode under the auth row in local mode', async () => {
+    const mockConfig = makeFakeConfig();
+    vi.spyOn(mockConfig, 'getContentGeneratorConfig').mockReturnValue({
+      authType: AuthType.LOCAL,
+    } as unknown as ContentGeneratorConfig);
+    vi.spyOn(mockConfig, 'getUserTierName').mockReturnValue(undefined);
+    vi.spyOn(mockConfig, 'getLocalUrl').mockReturnValue(
+      'http://127.0.0.1:8000/v1/chat/completions',
+    );
+    vi.spyOn(mockConfig, 'getLocalModel').mockReturnValue(
+      'Qwen/Qwen3-Coder-Next-FP8',
+    );
+    vi.spyOn(mockConfig, 'getLocalContextLimit').mockReturnValue(32768);
+    vi.spyOn(mockConfig, 'getLocalPromptMode').mockReturnValue('lite');
+
+    const { lastFrame, unmount } = await renderWithProviders(
+      <UserIdentity config={mockConfig} />,
+    );
+
+    const output = lastFrame();
+    expect(output).toContain(`Authenticated with ${AuthType.LOCAL}`);
+    expect(output).toContain('http://127.0.0.1:8000/v1/chat/completions');
+    expect(output).toContain('Qwen/Qwen3-Coder-Next-FP8');
+    expect(output).toContain('32,768 tokens');
+    expect(output).toContain('Prompt: lite');
+    expect(output).toContain('/local');
+    unmount();
+  });
+
+  it('should not render the local sub-block for non-local auth', async () => {
+    const mockConfig = makeFakeConfig();
+    vi.spyOn(mockConfig, 'getContentGeneratorConfig').mockReturnValue({
+      authType: AuthType.USE_GEMINI,
+      model: 'gemini-pro',
+    } as unknown as ContentGeneratorConfig);
+    vi.spyOn(mockConfig, 'getUserTierName').mockReturnValue(undefined);
+
+    const { lastFrame, unmount } = await renderWithProviders(
+      <UserIdentity config={mockConfig} />,
+    );
+
+    const output = lastFrame();
+    expect(output).not.toContain('/local');
+    expect(output).not.toContain('URL:');
+    unmount();
+  });
 });

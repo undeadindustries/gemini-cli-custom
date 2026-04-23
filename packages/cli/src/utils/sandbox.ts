@@ -574,6 +574,138 @@ export async function start_sandbox(
       args.push('--env', `GEMINI_MODEL=${process.env['GEMINI_MODEL']}`);
     }
 
+    // copy local LLM env vars
+    if (process.env['GEMINI_LOCAL_URL']) {
+      args.push('--env', `GEMINI_LOCAL_URL=${process.env['GEMINI_LOCAL_URL']}`);
+    }
+    if (process.env['GEMINI_LOCAL_MODEL']) {
+      args.push(
+        '--env',
+        `GEMINI_LOCAL_MODEL=${process.env['GEMINI_LOCAL_MODEL']}`,
+      );
+    }
+    if (process.env['GEMINI_LOCAL_TIMEOUT']) {
+      args.push(
+        '--env',
+        `GEMINI_LOCAL_TIMEOUT=${process.env['GEMINI_LOCAL_TIMEOUT']}`,
+      );
+    }
+    if (process.env['GEMINI_LOCAL_TOOLS']) {
+      args.push(
+        '--env',
+        `GEMINI_LOCAL_TOOLS=${process.env['GEMINI_LOCAL_TOOLS']}`,
+      );
+    }
+    if (process.env['GEMINI_LOCAL_PROMPT_MODE']) {
+      args.push(
+        '--env',
+        `GEMINI_LOCAL_PROMPT_MODE=${process.env['GEMINI_LOCAL_PROMPT_MODE']}`,
+      );
+    }
+    if (process.env['GEMINI_LOCAL_CONTEXT_LIMIT']) {
+      args.push(
+        '--env',
+        `GEMINI_LOCAL_CONTEXT_LIMIT=${process.env['GEMINI_LOCAL_CONTEXT_LIMIT']}`,
+      );
+    }
+    if (process.env['GEMINI_LOCAL_COMPRESSION_THRESHOLD']) {
+      args.push(
+        '--env',
+        `GEMINI_LOCAL_COMPRESSION_THRESHOLD=${process.env['GEMINI_LOCAL_COMPRESSION_THRESHOLD']}`,
+      );
+    }
+    if (process.env['GEMINI_LOCAL_PRESERVE_FRACTION']) {
+      args.push(
+        '--env',
+        `GEMINI_LOCAL_PRESERVE_FRACTION=${process.env['GEMINI_LOCAL_PRESERVE_FRACTION']}`,
+      );
+    }
+    if (process.env['GEMINI_LOCAL_AUTO_TRUNCATE']) {
+      args.push(
+        '--env',
+        `GEMINI_LOCAL_AUTO_TRUNCATE=${process.env['GEMINI_LOCAL_AUTO_TRUNCATE']}`,
+      );
+    }
+    // --- LOCAL FORK ADDITION (Phase 2.0) ---
+    if (process.env['GEMINI_LOCAL_ADAPTIVE_COMPRESSION_ENABLED']) {
+      args.push(
+        '--env',
+        `GEMINI_LOCAL_ADAPTIVE_COMPRESSION_ENABLED=${process.env['GEMINI_LOCAL_ADAPTIVE_COMPRESSION_ENABLED']}`,
+      );
+    }
+    if (process.env['GEMINI_LOCAL_ADAPTIVE_COMPRESSION_COOLDOWN']) {
+      args.push(
+        '--env',
+        `GEMINI_LOCAL_ADAPTIVE_COMPRESSION_COOLDOWN=${process.env['GEMINI_LOCAL_ADAPTIVE_COMPRESSION_COOLDOWN']}`,
+      );
+    }
+    if (process.env['GEMINI_LOCAL_ADAPTIVE_COMPRESSION_FLOOR']) {
+      args.push(
+        '--env',
+        `GEMINI_LOCAL_ADAPTIVE_COMPRESSION_FLOOR=${process.env['GEMINI_LOCAL_ADAPTIVE_COMPRESSION_FLOOR']}`,
+      );
+    }
+    if (process.env['GEMINI_LOCAL_WRITE_FILE_EJECT_ENABLED']) {
+      args.push(
+        '--env',
+        `GEMINI_LOCAL_WRITE_FILE_EJECT_ENABLED=${process.env['GEMINI_LOCAL_WRITE_FILE_EJECT_ENABLED']}`,
+      );
+    }
+    if (process.env['GEMINI_LOCAL_WRITE_FILE_EJECT_MIN_AGE']) {
+      args.push(
+        '--env',
+        `GEMINI_LOCAL_WRITE_FILE_EJECT_MIN_AGE=${process.env['GEMINI_LOCAL_WRITE_FILE_EJECT_MIN_AGE']}`,
+      );
+    }
+    if (process.env['GEMINI_LOCAL_WRITE_FILE_EJECT_MIN_TOKENS']) {
+      args.push(
+        '--env',
+        `GEMINI_LOCAL_WRITE_FILE_EJECT_MIN_TOKENS=${process.env['GEMINI_LOCAL_WRITE_FILE_EJECT_MIN_TOKENS']}`,
+      );
+    }
+    if (process.env['GEMINI_LOCAL_PRE_TURN_BUDGET_ENABLED']) {
+      args.push(
+        '--env',
+        `GEMINI_LOCAL_PRE_TURN_BUDGET_ENABLED=${process.env['GEMINI_LOCAL_PRE_TURN_BUDGET_ENABLED']}`,
+      );
+    }
+    if (process.env['GEMINI_LOCAL_PRE_TURN_RESERVED_RESPONSE']) {
+      args.push(
+        '--env',
+        `GEMINI_LOCAL_PRE_TURN_RESERVED_RESPONSE=${process.env['GEMINI_LOCAL_PRE_TURN_RESERVED_RESPONSE']}`,
+      );
+    }
+    if (process.env['GEMINI_LOCAL_PRE_TURN_COMPRESS_AT']) {
+      args.push(
+        '--env',
+        `GEMINI_LOCAL_PRE_TURN_COMPRESS_AT=${process.env['GEMINI_LOCAL_PRE_TURN_COMPRESS_AT']}`,
+      );
+    }
+    if (process.env['GEMINI_LOCAL_TOOL_MASK_ENABLED']) {
+      args.push(
+        '--env',
+        `GEMINI_LOCAL_TOOL_MASK_ENABLED=${process.env['GEMINI_LOCAL_TOOL_MASK_ENABLED']}`,
+      );
+    }
+    if (process.env['GEMINI_LOCAL_TOOL_MASK_PROTECTION_FRACTION']) {
+      args.push(
+        '--env',
+        `GEMINI_LOCAL_TOOL_MASK_PROTECTION_FRACTION=${process.env['GEMINI_LOCAL_TOOL_MASK_PROTECTION_FRACTION']}`,
+      );
+    }
+    if (process.env['GEMINI_LOCAL_TOOL_MASK_PRUNABLE_FRACTION']) {
+      args.push(
+        '--env',
+        `GEMINI_LOCAL_TOOL_MASK_PRUNABLE_FRACTION=${process.env['GEMINI_LOCAL_TOOL_MASK_PRUNABLE_FRACTION']}`,
+      );
+    }
+    if (process.env['GEMINI_LOCAL_TOOL_MASK_PROTECT_LATEST']) {
+      args.push(
+        '--env',
+        `GEMINI_LOCAL_TOOL_MASK_PROTECT_LATEST=${process.env['GEMINI_LOCAL_TOOL_MASK_PROTECT_LATEST']}`,
+      );
+    }
+
     // copy TERM and COLORTERM to try to maintain terminal setup
     if (process.env['TERM']) {
       args.push('--env', `TERM=${process.env['TERM']}`);

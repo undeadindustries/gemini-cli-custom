@@ -176,6 +176,17 @@ describe('ChatCompressionService', () => {
         return this;
       },
       getCompressionThreshold: vi.fn(),
+      // --- LOCAL FORK ADDITION (Phase 2.0) ---
+      // Default to a passthrough so tests that pre-date Phase 2.0 keep
+      // exercising the same threshold value they always have.
+      getEffectiveCompressionThreshold: vi.fn(async function (this: {
+        getCompressionThreshold: () => Promise<number | undefined>;
+      }) {
+        return this.getCompressionThreshold();
+      }),
+      isLocalMode: vi.fn().mockReturnValue(false),
+      getLocalContextLimit: vi.fn().mockReturnValue(32768),
+      getLocalPreserveFraction: vi.fn().mockReturnValue(0.2),
       getBaseLlmClient: vi.fn().mockReturnValue({
         generateContent: mockGenerateContent,
       }),

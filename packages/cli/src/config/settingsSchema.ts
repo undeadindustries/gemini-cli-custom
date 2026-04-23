@@ -2053,6 +2053,324 @@ const SETTINGS_SCHEMA = {
     },
   },
 
+  local: {
+    type: 'object',
+    label: 'Local LLM',
+    category: 'Advanced',
+    requiresRestart: false,
+    default: {},
+    description:
+      'Configuration for routing requests to a local OpenAI-compatible LLM endpoint (e.g. vLLM, Ollama).',
+    showInDialog: true,
+    properties: {
+      url: {
+        type: 'string',
+        label: 'Local LLM URL',
+        category: 'Advanced',
+        requiresRestart: false,
+        default: '',
+        description:
+          'OpenAI-compatible chat completions endpoint URL (e.g. http://127.0.0.1:8000/v1/chat/completions). Overridden by GEMINI_LOCAL_URL env var.',
+        showInDialog: true,
+      },
+      model: {
+        type: 'string',
+        label: 'Local Model Name',
+        category: 'Advanced',
+        requiresRestart: false,
+        default: '',
+        description:
+          'Model name sent in requests to the local endpoint. Overridden by GEMINI_LOCAL_MODEL env var.',
+        showInDialog: true,
+      },
+      timeout: {
+        type: 'number',
+        label: 'Request Timeout (ms)',
+        category: 'Advanced',
+        requiresRestart: false,
+        default: 120000,
+        description:
+          'Timeout in milliseconds for requests to the local LLM. Overridden by GEMINI_LOCAL_TIMEOUT env var.',
+        showInDialog: true,
+      },
+      enableTools: {
+        type: 'boolean',
+        label: 'Enable Tool Calls',
+        category: 'Advanced',
+        requiresRestart: false,
+        default: false,
+        description:
+          'Send tool/function declarations to the local LLM endpoint. Only enable if vLLM was started with --enable-auto-tool-choice and --tool-call-parser, or if Ollama is using a model with native tool support.',
+        showInDialog: true,
+      },
+      promptMode: {
+        type: 'enum',
+        label: 'Prompt Mode',
+        category: 'Advanced',
+        requiresRestart: false,
+        default: 'lite',
+        description:
+          'System prompt size. "lite" sends a compact prompt optimized for local models (~3K chars). "full" sends the complete Gemini CLI prompt (~15-20K chars) for maximum capability at the cost of slower inference.',
+        showInDialog: true,
+        options: [
+          { value: 'lite', label: 'Lite (recommended for local models)' },
+          { value: 'full', label: 'Full (same as Gemini)' },
+        ],
+      },
+      // --- LOCAL FORK ADDITION (Phase 2.0.13) ---
+      temperature: {
+        type: 'number',
+        label: 'Sampling Temperature',
+        category: 'Advanced',
+        requiresRestart: false,
+        default: undefined,
+        description:
+          "Sampling temperature sent to the local LLM (0.0 – 2.0). Lower values are more deterministic; 0.6 is recommended for Qwen3 coding/tool-use. Leave unset to use the model's own generation_config.json default. Overridden by GEMINI_LOCAL_TEMPERATURE env var.",
+        showInDialog: true,
+      },
+      // --- END LOCAL FORK ADDITION ---
+      // --- LOCAL FORK ADDITION (Phase 2.0.12) ---
+      toolCallParsing: {
+        type: 'enum',
+        label: 'Tool-call Parser Mode',
+        category: 'Advanced',
+        requiresRestart: false,
+        default: 'lenient',
+        description:
+          'How aggressively to recover tool calls that the model emitted as raw text instead of structured tool_calls. "strict" only matches <tool_call>...</tool_call> wrappers (safest, zero false-positive risk). "lenient" (default) also matches bare <function=...> blocks when an orphaned </tool_call> closer is present (recovers Nemotron 3 / Mistral 4). "loose" matches any <function=...> block anywhere (highest recovery, has documentation-injection risk). Overridden by GEMINI_LOCAL_TOOL_CALL_PARSING env var. Hot-reloadable via /local toolcall <mode>.',
+        showInDialog: true,
+        options: [
+          { value: 'strict', label: 'Strict (wrapped tool_call only)' },
+          {
+            value: 'lenient',
+            label: 'Lenient (default, gated bare-block recovery)',
+          },
+          { value: 'loose', label: 'Loose (match any function block)' },
+        ],
+      },
+      // --- END LOCAL FORK ADDITION ---
+      contextLimit: {
+        type: 'number',
+        label: 'Context Window Limit (tokens)',
+        category: 'Advanced',
+        requiresRestart: false,
+        default: 32768,
+        description:
+          'Maximum context window size in tokens for the local LLM. The CLI uses this to trigger chat compression before the server rejects oversized requests. Auto-detected from the server when possible. Overridden by GEMINI_LOCAL_CONTEXT_LIMIT env var.',
+        showInDialog: true,
+      },
+      compressionThreshold: {
+        type: 'number',
+        label: 'Compression Threshold (fraction)',
+        category: 'Advanced',
+        requiresRestart: false,
+        default: 0.4,
+        description:
+          'Fraction of the local context limit at which automatic chat compression is triggered. Lower values compress earlier (safer for low-context models). Range: 0.1 to 0.95. Overridden by GEMINI_LOCAL_COMPRESSION_THRESHOLD env var.',
+        showInDialog: true,
+      },
+      preserveFraction: {
+        type: 'number',
+        label: 'Preserve Fraction (raw history kept)',
+        category: 'Advanced',
+        requiresRestart: false,
+        default: 0.2,
+        description:
+          'Fraction of the most recent chat history kept raw (uncompressed) after a compression pass. Lower values produce a smaller post-compression history. Range: 0.05 to 0.5. Overridden by GEMINI_LOCAL_PRESERVE_FRACTION env var.',
+        showInDialog: true,
+      },
+      autoTruncateOnOverflow: {
+        type: 'boolean',
+        label: 'Auto-truncate History on Overflow',
+        category: 'Advanced',
+        requiresRestart: false,
+        default: true,
+        description:
+          'When the local context window would still overflow even after force-compression, drop the oldest history pairs as a last-resort recovery. Disable to surface the overflow as an error instead. Overridden by GEMINI_LOCAL_AUTO_TRUNCATE env var.',
+        showInDialog: true,
+      },
+      // --- LOCAL FORK ADDITION (Phase 2.0) ---
+      adaptiveCompression: {
+        type: 'object',
+        label: 'Adaptive Compression Threshold (Local)',
+        category: 'Advanced',
+        requiresRestart: false,
+        default: {},
+        description:
+          'Tracks recent compression ratios and tightens the compression threshold when summaries fail to free meaningful context. Auto-disabled when local.compressionThreshold is set explicitly.',
+        showInDialog: true,
+        properties: {
+          enabled: {
+            type: 'boolean',
+            label: 'Enable Adaptive Compression Threshold',
+            category: 'Advanced',
+            requiresRestart: false,
+            default: true,
+            description:
+              'When true, tightens the compression trigger after weak compressions are observed. Has no effect if local.compressionThreshold is set. Overridden by GEMINI_LOCAL_ADAPTIVE_COMPRESSION_ENABLED env var.',
+            showInDialog: true,
+          },
+          cooldownTurns: {
+            type: 'number',
+            label: 'Cooldown Between Tightenings (turns)',
+            category: 'Advanced',
+            requiresRestart: false,
+            default: 5,
+            description:
+              'Minimum turns between adaptive tightenings to prevent runaway lowering. Range: 1 - 50. Overridden by GEMINI_LOCAL_ADAPTIVE_COMPRESSION_COOLDOWN env var.',
+            showInDialog: true,
+          },
+          floor: {
+            type: 'number',
+            label: 'Adaptive Threshold Floor (fraction)',
+            category: 'Advanced',
+            requiresRestart: false,
+            default: 0.35,
+            description:
+              'Lower bound for the adaptive threshold. Tightening will never reduce the trigger below this value. Range: 0.1 - 0.9. Overridden by GEMINI_LOCAL_ADAPTIVE_COMPRESSION_FLOOR env var.',
+            showInDialog: true,
+          },
+        },
+      },
+      writeFileEjection: {
+        type: 'object',
+        label: 'Write-File Content Ejection (Local)',
+        category: 'Advanced',
+        requiresRestart: false,
+        default: {},
+        description:
+          'Replaces the bulky `args.content` of stale write_file tool calls with a compact <file_written path="..." cached=true> marker. The file remains on disk and can be re-read on demand. Cuts history bloat in code-generation sessions by 50-90% on long runs.',
+        showInDialog: true,
+        properties: {
+          enabled: {
+            type: 'boolean',
+            label: 'Enable Write-File Ejection',
+            category: 'Advanced',
+            requiresRestart: false,
+            default: true,
+            description:
+              'When true, runs ejection after each turn. Overridden by GEMINI_LOCAL_WRITE_FILE_EJECT_ENABLED env var.',
+            showInDialog: true,
+          },
+          minAgeTurns: {
+            type: 'number',
+            label: 'Minimum Age (turns) Before Ejection',
+            category: 'Advanced',
+            requiresRestart: false,
+            default: 1,
+            description:
+              'Number of turns from the end of history before a write_file call becomes eligible for ejection. 1 = "anything older than the latest turn". Range: 1 - 10. Overridden by GEMINI_LOCAL_WRITE_FILE_EJECT_MIN_AGE env var.',
+            showInDialog: true,
+          },
+          minTokensPerCall: {
+            type: 'number',
+            label: 'Minimum Tokens to Eject',
+            category: 'Advanced',
+            requiresRestart: false,
+            default: 200,
+            description:
+              'Minimum estimated token count for a single write_file content payload before ejection bothers acting. Avoids touching tiny writes. Overridden by GEMINI_LOCAL_WRITE_FILE_EJECT_MIN_TOKENS env var.',
+            showInDialog: true,
+          },
+        },
+      },
+      preTurnBudget: {
+        type: 'object',
+        label: 'Pre-Turn Budget Check (Local)',
+        category: 'Advanced',
+        requiresRestart: false,
+        default: {},
+        description:
+          'Proactively force-compress before a turn if the projected tokens (history + request + reserved response) would exceed proactiveCompressAt of the local context window. Breaks the compress-then-immediately-overflow loop on small windows.',
+        showInDialog: true,
+        properties: {
+          enabled: {
+            type: 'boolean',
+            label: 'Enable Pre-Turn Budget Check',
+            category: 'Advanced',
+            requiresRestart: false,
+            default: true,
+            description:
+              'When true, runs a synchronous budget check before each turn and force-compresses if the projection would exceed proactiveCompressAt. Overridden by GEMINI_LOCAL_PRE_TURN_BUDGET_ENABLED env var.',
+            showInDialog: true,
+          },
+          reservedResponseTokens: {
+            type: 'number',
+            label: 'Reserved Response Tokens',
+            category: 'Advanced',
+            requiresRestart: false,
+            default: 4096,
+            description:
+              "Tokens reserved for the model's response when projecting context usage. Larger values trigger compression earlier. Overridden by GEMINI_LOCAL_PRE_TURN_RESERVED_RESPONSE env var.",
+            showInDialog: true,
+          },
+          proactiveCompressAt: {
+            type: 'number',
+            label: 'Proactive Compress Threshold (fraction)',
+            category: 'Advanced',
+            requiresRestart: false,
+            default: 0.8,
+            description:
+              'Fraction of localContextLimit at which to force-compress before sending the turn. Range: 0.5 to 0.99. Overridden by GEMINI_LOCAL_PRE_TURN_COMPRESS_AT env var.',
+            showInDialog: true,
+          },
+        },
+      },
+      toolOutputMasking: {
+        type: 'object',
+        label: 'Tool Output Masking (Local)',
+        category: 'Advanced',
+        requiresRestart: false,
+        default: {},
+        description:
+          'Local-mode overrides for the ToolOutputMaskingService. When enabled, masking thresholds are auto-scaled to the local context window so masking actually engages on small windows (the upstream defaults assume 1M-token cloud models).',
+        showInDialog: true,
+        properties: {
+          enabled: {
+            type: 'boolean',
+            label: 'Enable Local-Scaled Tool Output Masking',
+            category: 'Advanced',
+            requiresRestart: false,
+            default: true,
+            description:
+              'When true, scales masking thresholds to localContextLimit so the masker actually fires on small local context windows. Disable to fall back to upstream cloud defaults. Overridden by GEMINI_LOCAL_TOOL_MASK_ENABLED env var.',
+            showInDialog: true,
+          },
+          protectionFraction: {
+            type: 'number',
+            label: 'Protection Fraction',
+            category: 'Advanced',
+            requiresRestart: false,
+            default: 0.15,
+            description:
+              'Fraction of localContextLimit reserved as the "protection window" — the most recent N tool tokens are never masked. Range: 0.05 to 0.5. Overridden by GEMINI_LOCAL_TOOL_MASK_PROTECTION_FRACTION env var.',
+            showInDialog: true,
+          },
+          prunableFraction: {
+            type: 'number',
+            label: 'Prunable Fraction',
+            category: 'Advanced',
+            requiresRestart: false,
+            default: 0.1,
+            description:
+              'Fraction of localContextLimit accumulated as prunable tool output before masking actually triggers. Range: 0.05 to 0.5. Overridden by GEMINI_LOCAL_TOOL_MASK_PRUNABLE_FRACTION env var.',
+            showInDialog: true,
+          },
+          protectLatestTurn: {
+            type: 'boolean',
+            label: 'Protect Latest Turn',
+            category: 'Advanced',
+            requiresRestart: false,
+            default: true,
+            description:
+              'When true, never mask any tool output in the most recent conversation turn. Recommended on. Overridden by GEMINI_LOCAL_TOOL_MASK_PROTECT_LATEST env var.',
+            showInDialog: true,
+          },
+        },
+      },
+    },
+  },
+
   experimental: {
     type: 'object',
     label: 'Experimental',

@@ -1,3 +1,194 @@
+# gemini-cli-local
+
+> **This is a private fork of
+> [google-gemini/gemini-cli](https://github.com/google-gemini/gemini-cli).** It
+> extends the official CLI with a "Local LLM Bypass" that routes requests to any
+> local OpenAI-compatible server (vLLM, Ollama, llama.cpp, etc.) while keeping
+> all upstream Gemini / Vertex AI paths fully intact.
+>
+> The binary is named `gemini-local-cli` so it coexists with a standard
+> `gemini-cli` install on the same machine.
+
+---
+
+## What is different from upstream
+
+| Area                           | Upstream gemini-cli                | gemini-cli-local                                                                  |
+| ------------------------------ | ---------------------------------- | --------------------------------------------------------------------------------- |
+| **Backend**                    | Google Gemini / Vertex AI only     | Local OpenAI-compatible endpoint + Gemini (switchable)                            |
+| **Binary name**                | `gemini`                           | `gemini-local-cli` (avoids PATH collision)                                        |
+| **Auth**                       | Google OAuth / API key / Vertex    | All of the above **plus** `AuthType.LOCAL` (no key required)                      |
+| **Context management**         | 1 M-token Gemini window            | 4-layer proactive defense for small local windows (32 K–100 K)                    |
+| **Mistral / Devstral support** | N/A                                | Tool-call ID sanitization, orphan-tool-call patching, role-transition bridging    |
+| **Local model discovery**      | N/A                                | Auto-queries `GET /v1/models`, hybrid picker in `/model` dialog                   |
+| **Settings hot-reload**        | Restart required for most settings | `local.url`, `local.model`, `local.promptMode`, `local.timeout` reload live       |
+| **`/local` command**           | N/A                                | Dialog + sub-commands (`show`, `url`, `model`, `prompt`, `timeout`)               |
+| **System prompt**              | Full Gemini prompt                 | Selectable: `lite` (optimized for small local models) or `full`                   |
+| **Tool call format**           | Gemini SDK native                  | Translated to OpenAI `tool_calls` / `tool` messages with Mistral-specific patches |
+
+---
+
+## Setup and running (local mode)
+
+### Dependencies
+
+- Node.js 20+
+- npm 10+
+- A running OpenAI-compatible inference server (vLLM, Ollama, llama.cpp)
+
+### Build from source
+
+```bash
+git clone <this-repo>
+cd gemini-cli
+npm install
+npm run build
+```
+
+### Run
+
+```bash
+# Point at your local vLLM / Ollama server
+# local.url can be the full chat endpoint or just the server root — both work.
+# The CLI auto-normalises the path before appending /v1/models for discovery.
+export GEMINI_LOCAL_URL=http://127.0.0.1:8000/v1/chat/completions
+export GEMINI_LOCAL_MODEL=mistralai/Devstral-Small-2-24B-Instruct-2512
+
+node packages/cli/dist/index.js
+# or after global npm install:
+gemini-local-cli
+```
+
+The header will confirm local mode:
+
+```
+gemini-cli-local v1.0.0 (Gemini CLI v0.40.0-nightly...)
+  Authenticated with local /auth
+    URL:     http://127.0.0.1:8000/v1/chat/completions
+    Model:   mistralai/Devstral-Small-2-24B-Instruct-2512
+    Context: 100,000 tokens   Prompt: lite
+```
+
+### Key configuration (settings.json or env vars)
+
+| Setting                 | Env var                          | Default               | Notes                                                                   |
+| ----------------------- | -------------------------------- | --------------------- | ----------------------------------------------------------------------- |
+| `local.url`             | `GEMINI_LOCAL_URL`               | —                     | Required to activate local mode                                         |
+| `local.model`           | `GEMINI_LOCAL_MODEL`             | `local-model`         | Sent in every request                                                   |
+| `local.timeout`         | `GEMINI_LOCAL_TIMEOUT`           | `120000` ms           | Hot-reloadable via `/local timeout`                                     |
+| `local.contextLimit`    | `GEMINI_LOCAL_CONTEXT_LIMIT`     | auto / 32768          | Hot-reloadable                                                          |
+| `local.promptMode`      | `GEMINI_LOCAL_PROMPT_MODE`       | `lite`                | `lite` or `full`                                                        |
+| `local.temperature`     | `GEMINI_LOCAL_TEMPERATURE`       | unset (model default) | Sampling temperature 0.0–2.0. Recommend `0.6` for Qwen3 coding/tool-use |
+| `local.toolCallParsing` | `GEMINI_LOCAL_TOOL_CALL_PARSING` | `lenient`             | `strict` \| `lenient` \| `loose`. Hot-reloadable via `/local toolcall`  |
+| `local.enableTools`     | `GEMINI_LOCAL_TOOLS`             | `false`               | Set `true` for vLLM with `--enable-auto-tool-choice`                    |
+
+All local settings can be changed live without restarting via the `/local`
+command.
+
+### Mistral / Devstral-specific notes
+
+When running a Mistral-family model (Devstral, Mixtral, Codestral, etc.) with
+vLLM's `--tool-call-parser mistral` flag, this fork automatically:
+
+- Sanitizes tool-call IDs to the required 9-character alphanumeric format
+- Inserts a synthetic `assistant(".")` bridge message between any `tool` →
+  `user` role transition
+- Synthesizes dummy tool responses for orphaned tool calls (session resume)
+
+These patches are detected by model name and do not affect Qwen, Gemma, or other
+models.
+
+### Tool-call parser hardening (`local.toolCallParsing`)
+
+Some models (notably **Mistral 4 119B** and **NVIDIA Nemotron 3 Super**) emit
+tool calls as raw text in the `content` field instead of the structured
+`tool_calls` field — and not always in a clean `<tool_call>...</tool_call>`
+wrapper. The fork ships a content-side recovery parser with three modes:
+
+| Mode                | Matches                                                                                                                                         | Use when                                                                                                                                 |
+| ------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------- |
+| `strict`            | Only `<tool_call>...</tool_call>` wrapped blocks                                                                                                | Security-sensitive contexts, or any time you treat model output as untrusted input                                                       |
+| `lenient` (default) | Wrapped blocks, **plus** bare `<function=...>` blocks **only when an orphaned `</tool_call>` closer is present** in the content (intent signal) | Default. Keeps Qwen / Gemma / Devstral 24B byte-identical to before, and recovers Nemotron 3 / Mistral 4                                 |
+| `loose`             | Any `<function=...>` block anywhere in the content                                                                                              | Power-user opt-in. Has documentation-injection risk (a model writing a tutorial about tool-call syntax could trigger an accidental call) |
+
+Change the mode at any time without restarting:
+
+```text
+/local toolcall strict
+/local toolcall lenient
+/local toolcall loose
+```
+
+### Tested models (DGX Spark)
+
+The following combinations were exercised with **gemini-cli-local** on an
+**NVIDIA DGX Spark** (local vLLM). Use them as a reference for flags and context
+limits; your hardware may need different `--max-model-len` or memory settings.
+
+| Model                                         | vLLM flags (add to your `vllm serve` line)                                                                                                                 | Context / memory notes                                                                                                                                                                                                                                                                                                                                                                  |
+| --------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **Qwen 3 Coder Next FP8 (~72B)**              | `--enable-auto-tool-choice`<br>`--tool-call-parser hermes`<br>`--reasoning-parser deepseek_r1`                                                             | Tool calling and `<think>` / redacted-thinking style tags worked with this stack. Needs a **large** context budget: `--max-model-len` **45056** or higher so the CLI system prompt fits.                                                                                                                                                                                                |
+| **Qwen 3.5 27B Dense (BF16)**                 | `--enable-auto-tool-choice`<br>`--tool-call-parser hermes`<br>`--reasoning-parser deepseek_r1`                                                             | Comfortable at **65536** tokens (`--max-model-len 65536`).                                                                                                                                                                                                                                                                                                                              |
+| **Google Gemma 4 31B Dense (BF16)**           | `--enable-auto-tool-choice`<br>`--tool-call-parser gemma4`                                                                                                 | No separate reasoning parser. Comfortable at **65536** tokens.                                                                                                                                                                                                                                                                                                                          |
+| **Mistral Devstral Small 2 24B Instruct**     | `--enable-auto-tool-choice`<br>`--tool-call-parser mistral`                                                                                                | Comfortable at **100000** tokens. With the Mistral tool parser, the server enforces OpenAI-style rules; this fork aligns tool-call IDs and message roles accordingly.                                                                                                                                                                                                                   |
+| **NVIDIA Nemotron 3 Super 120B A12B (NVFP4)** | `--enable-auto-tool-choice`<br>`--tool-call-parser hermes`<br>`--reasoning-parser deepseek_r1`<br>and env:<br>`VLLM_NVFP4_GEMM_BACKEND=flashinfer-cutlass` | The `deepseek_r1` reasoning parser is required — without it, Nemotron's chain-of-thought leaks into `content` because the model emits an orphaned `</think>` closer. On the tested ARM64 stack, the `VLLM_NVFP4_GEMM_BACKEND` env avoided Marlin-related crashes. Run with **`--max-model-len 32768`** and **`--gpu-memory-utilization 0.92`** to fit within **128 GB** unified memory. |
+
+---
+
+## Architecture overview
+
+```
+User prompt
+     │
+     ▼
+GeminiClient (packages/core/src/core/client.ts)
+     │  isLocalMode()?
+     ├──YES──► LocalLlmContentGenerator  ──► fetch() ──► vLLM / Ollama
+     │           packages/core/src/core/localLlmContentGenerator.ts
+     │           • Gemini SDK types → OpenAI messages
+     │           • Mistral patches (tool-call ID, role transitions, orphan fill)
+     │           • SSE streaming + non-streaming retry
+     │
+     └──NO───► Upstream Gemini / Vertex AI path (unchanged)
+```
+
+Context management layers (local mode only, in order of execution):
+
+1. Pre-turn budget check (`preTurnBudget.ts`) — proactive compress at 80% fill
+2. Write-file ejection (`writeFileEjection.ts`) — replaces large file payloads
+   with compact markers
+3. Force compress (`chatCompressionService.ts`) — hard compress when overflow
+   predicted
+4. History truncation (`historyTruncation.ts`) — drop oldest pairs as last
+   resort
+
+---
+
+## Fork maintenance
+
+This fork tracks upstream `google-gemini/gemini-cli`. To rebase:
+
+```bash
+git fetch upstream
+git rebase upstream/main
+```
+
+All fork-only additions are fenced with
+`// --- LOCAL FORK ADDITION (Phase X) ---` comments so conflict resolution is
+straightforward. No upstream files have been deleted or reformatted; all changes
+are additive and gated on `isLocalMode()`.
+
+See [AGENT.md](AGENT.md) for full architectural decisions, phase history, known
+constraints, and pending TODOs.
+
+---
+
+## Upstream README
+
+The original upstream README follows below.
+
+---
+
 # Gemini CLI
 
 [![Gemini CLI CI](https://github.com/google-gemini/gemini-cli/actions/workflows/ci.yml/badge.svg)](https://github.com/google-gemini/gemini-cli/actions/workflows/ci.yml)

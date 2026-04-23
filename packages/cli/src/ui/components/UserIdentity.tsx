@@ -39,6 +39,25 @@ export const UserIdentity: React.FC<UserIdentityProps> = ({ config }) => {
 
   const isUltra = useMemo(() => isUltraTier(tierName), [tierName]);
 
+  // --- LOCAL FORK ADDITION ---
+  // When running in local mode, surface the live local-server settings
+  // directly under the auth identity row so users can see at a glance which
+  // endpoint and model they're talking to. Reads through Config getters so
+  // the values stay in sync with hot-reloaded settings (Phase 2.0.2).
+  const localInfo = useMemo(() => {
+    if (authType !== AuthType.LOCAL) return undefined;
+    return {
+      url: config.getLocalUrl?.() ?? '',
+      model: config.getLocalModel?.() ?? '',
+      contextLimit: config.getLocalContextLimit?.() ?? 0,
+      promptMode: config.getLocalPromptMode?.() ?? 'lite',
+      // --- LOCAL FORK ADDITION (Phase 2.0.12) ---
+      parserMode: config.getLocalToolCallParseMode?.() ?? 'lenient',
+      // --- END LOCAL FORK ADDITION ---
+    };
+  }, [config, authType]);
+  // --- END LOCAL FORK ADDITION ---
+
   if (!authType) {
     return null;
   }
@@ -59,6 +78,29 @@ export const UserIdentity: React.FC<UserIdentityProps> = ({ config }) => {
         </Text>
         <Text color={theme.text.secondary}> /auth</Text>
       </Box>
+
+      {/* --- LOCAL FORK ADDITION --- */}
+      {localInfo && (
+        <Box flexDirection="column" marginLeft={2}>
+          <Text color={theme.text.secondary} wrap="truncate-end">
+            URL: {localInfo.url || '(not set)'}
+          </Text>
+          <Text color={theme.text.secondary} wrap="truncate-end">
+            Model: {localInfo.model || '(not set)'}
+          </Text>
+          <Text color={theme.text.secondary} wrap="truncate-end">
+            Context: {localInfo.contextLimit.toLocaleString()} tokens Prompt:{' '}
+            {localInfo.promptMode}
+          </Text>
+          {/* --- LOCAL FORK ADDITION (Phase 2.0.12) --- */}
+          <Text color={theme.text.secondary} wrap="truncate-end">
+            Parser: {localInfo.parserMode}
+          </Text>
+          {/* --- END LOCAL FORK ADDITION --- */}
+          <Text color={theme.text.secondary}> /local</Text>
+        </Box>
+      )}
+      {/* --- END LOCAL FORK ADDITION --- */}
 
       {/* Tier Name /upgrade */}
       {tierName && (

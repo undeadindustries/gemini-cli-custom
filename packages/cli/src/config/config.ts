@@ -866,6 +866,8 @@ export async function loadCliConfig(
     interactive,
   );
 
+  const localUrl = process.env['GEMINI_LOCAL_URL'] || settings.local?.url;
+
   const defaultModel = PREVIEW_GEMINI_MODEL_AUTO;
   const rawModel =
     argv.model || process.env['GEMINI_MODEL'] || settings.model?.name;
@@ -877,8 +879,13 @@ export async function loadCliConfig(
       ? undefined
       : String(rawModel ?? '').trim() || '';
 
-  const resolvedModel =
-    specifiedModel === GEMINI_MODEL_ALIAS_AUTO
+  // --- LOCAL FORK ADDITION (Phase 1) ---
+  const resolvedModel = localUrl
+    ? process.env['GEMINI_LOCAL_MODEL'] ||
+      settings.local?.model ||
+      'local-model'
+    : specifiedModel === GEMINI_MODEL_ALIAS_AUTO
+  // --- END LOCAL FORK ADDITION ---
       ? defaultModel
       : specifiedModel || defaultModel;
   const sandboxConfig = await loadSandboxConfig(settings, argv);
@@ -1117,6 +1124,106 @@ export async function loadCliConfig(
     adk: settings.experimental?.adk,
     fakeResponses: argv.fakeResponses,
     recordResponses: argv.recordResponses,
+    localUrl:
+      process.env['GEMINI_LOCAL_URL'] || settings.local?.url || undefined,
+    localModel:
+      process.env['GEMINI_LOCAL_MODEL'] || settings.local?.model || undefined,
+    localTimeout: process.env['GEMINI_LOCAL_TIMEOUT']
+      ? parseInt(process.env['GEMINI_LOCAL_TIMEOUT'], 10)
+      : settings.local?.timeout || undefined,
+    localEnableTools:
+      process.env['GEMINI_LOCAL_TOOLS'] === 'true'
+        ? true
+        : (settings.local?.enableTools ?? false),
+    localPromptMode:
+      process.env['GEMINI_LOCAL_PROMPT_MODE'] ||
+      settings.local?.promptMode ||
+      undefined,
+    // --- LOCAL FORK ADDITION (Phase 2.0.12) ---
+    localToolCallParseMode:
+      process.env['GEMINI_LOCAL_TOOL_CALL_PARSING'] ||
+      settings.local?.toolCallParsing ||
+      undefined,
+    // --- END LOCAL FORK ADDITION ---
+    // --- LOCAL FORK ADDITION (Phase 2.0.13) ---
+    localTemperature: process.env['GEMINI_LOCAL_TEMPERATURE']
+      ? parseFloat(process.env['GEMINI_LOCAL_TEMPERATURE'])
+      : (settings.local?.temperature ?? undefined),
+    // --- END LOCAL FORK ADDITION ---
+    localContextLimit: process.env['GEMINI_LOCAL_CONTEXT_LIMIT']
+      ? parseInt(process.env['GEMINI_LOCAL_CONTEXT_LIMIT'], 10)
+      : settings.local?.contextLimit || undefined,
+    localCompressionThreshold: process.env['GEMINI_LOCAL_COMPRESSION_THRESHOLD']
+      ? parseFloat(process.env['GEMINI_LOCAL_COMPRESSION_THRESHOLD'])
+      : (settings.local?.compressionThreshold ?? undefined),
+    localPreserveFraction: process.env['GEMINI_LOCAL_PRESERVE_FRACTION']
+      ? parseFloat(process.env['GEMINI_LOCAL_PRESERVE_FRACTION'])
+      : (settings.local?.preserveFraction ?? undefined),
+    localAutoTruncateOnOverflow:
+      process.env['GEMINI_LOCAL_AUTO_TRUNCATE'] !== undefined
+        ? process.env['GEMINI_LOCAL_AUTO_TRUNCATE'] === 'true'
+        : (settings.local?.autoTruncateOnOverflow ?? undefined),
+    // --- LOCAL FORK ADDITION (Phase 2.0) ---
+    localAdaptiveCompressionEnabled:
+      process.env['GEMINI_LOCAL_ADAPTIVE_COMPRESSION_ENABLED'] !== undefined
+        ? process.env['GEMINI_LOCAL_ADAPTIVE_COMPRESSION_ENABLED'] === 'true'
+        : (settings.local?.adaptiveCompression?.enabled ?? undefined),
+    localAdaptiveCompressionCooldownTurns: process.env[
+      'GEMINI_LOCAL_ADAPTIVE_COMPRESSION_COOLDOWN'
+    ]
+      ? parseInt(process.env['GEMINI_LOCAL_ADAPTIVE_COMPRESSION_COOLDOWN'], 10)
+      : (settings.local?.adaptiveCompression?.cooldownTurns ?? undefined),
+    localAdaptiveCompressionFloor: process.env[
+      'GEMINI_LOCAL_ADAPTIVE_COMPRESSION_FLOOR'
+    ]
+      ? parseFloat(process.env['GEMINI_LOCAL_ADAPTIVE_COMPRESSION_FLOOR'])
+      : (settings.local?.adaptiveCompression?.floor ?? undefined),
+    localWriteFileEjectionEnabled:
+      process.env['GEMINI_LOCAL_WRITE_FILE_EJECT_ENABLED'] !== undefined
+        ? process.env['GEMINI_LOCAL_WRITE_FILE_EJECT_ENABLED'] === 'true'
+        : (settings.local?.writeFileEjection?.enabled ?? undefined),
+    localWriteFileEjectionMinAgeTurns: process.env[
+      'GEMINI_LOCAL_WRITE_FILE_EJECT_MIN_AGE'
+    ]
+      ? parseInt(process.env['GEMINI_LOCAL_WRITE_FILE_EJECT_MIN_AGE'], 10)
+      : (settings.local?.writeFileEjection?.minAgeTurns ?? undefined),
+    localWriteFileEjectionMinTokensPerCall: process.env[
+      'GEMINI_LOCAL_WRITE_FILE_EJECT_MIN_TOKENS'
+    ]
+      ? parseInt(process.env['GEMINI_LOCAL_WRITE_FILE_EJECT_MIN_TOKENS'], 10)
+      : (settings.local?.writeFileEjection?.minTokensPerCall ?? undefined),
+    localPreTurnBudgetEnabled:
+      process.env['GEMINI_LOCAL_PRE_TURN_BUDGET_ENABLED'] !== undefined
+        ? process.env['GEMINI_LOCAL_PRE_TURN_BUDGET_ENABLED'] === 'true'
+        : (settings.local?.preTurnBudget?.enabled ?? undefined),
+    localPreTurnBudgetReservedResponseTokens: process.env[
+      'GEMINI_LOCAL_PRE_TURN_RESERVED_RESPONSE'
+    ]
+      ? parseInt(process.env['GEMINI_LOCAL_PRE_TURN_RESERVED_RESPONSE'], 10)
+      : (settings.local?.preTurnBudget?.reservedResponseTokens ?? undefined),
+    localPreTurnBudgetProactiveCompressAt: process.env[
+      'GEMINI_LOCAL_PRE_TURN_COMPRESS_AT'
+    ]
+      ? parseFloat(process.env['GEMINI_LOCAL_PRE_TURN_COMPRESS_AT'])
+      : (settings.local?.preTurnBudget?.proactiveCompressAt ?? undefined),
+    localToolOutputMaskingEnabled:
+      process.env['GEMINI_LOCAL_TOOL_MASK_ENABLED'] !== undefined
+        ? process.env['GEMINI_LOCAL_TOOL_MASK_ENABLED'] === 'true'
+        : (settings.local?.toolOutputMasking?.enabled ?? undefined),
+    localToolOutputMaskingProtectionFraction: process.env[
+      'GEMINI_LOCAL_TOOL_MASK_PROTECTION_FRACTION'
+    ]
+      ? parseFloat(process.env['GEMINI_LOCAL_TOOL_MASK_PROTECTION_FRACTION'])
+      : (settings.local?.toolOutputMasking?.protectionFraction ?? undefined),
+    localToolOutputMaskingPrunableFraction: process.env[
+      'GEMINI_LOCAL_TOOL_MASK_PRUNABLE_FRACTION'
+    ]
+      ? parseFloat(process.env['GEMINI_LOCAL_TOOL_MASK_PRUNABLE_FRACTION'])
+      : (settings.local?.toolOutputMasking?.prunableFraction ?? undefined),
+    localToolOutputMaskingProtectLatestTurn:
+      process.env['GEMINI_LOCAL_TOOL_MASK_PROTECT_LATEST'] !== undefined
+        ? process.env['GEMINI_LOCAL_TOOL_MASK_PROTECT_LATEST'] === 'true'
+        : (settings.local?.toolOutputMasking?.protectLatestTurn ?? undefined),
     retryFetchErrors: settings.general?.retryFetchErrors,
     billing: settings.billing,
     vertexAiRouting: settings.billing?.vertexAi,

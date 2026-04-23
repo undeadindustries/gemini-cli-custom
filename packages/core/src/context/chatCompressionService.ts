@@ -267,10 +267,19 @@ export class ChatCompressionService {
 
     // Don't compress if not forced and we are under the limit.
     if (!force) {
+      // --- LOCAL FORK ADDITION (Phase 2.0) ---
+      // In local mode, prefer the adaptive (possibly tightened) threshold so
+      // repeated weak compressions trigger earlier next time. Outside local
+      // mode (or when adaptation is disabled / overridden), this returns the
+      // exact same value as getCompressionThreshold().
+      const turnIndex = chat.getHistory().length;
       const threshold =
-        (await config.getCompressionThreshold()) ??
+        (await config.getEffectiveCompressionThreshold(turnIndex)) ??
         DEFAULT_COMPRESSION_TOKEN_THRESHOLD;
-      if (originalTokenCount < threshold * tokenLimit(model)) {
+      const effectiveLimit = config.isLocalMode()
+        ? config.getLocalContextLimit()
+        : tokenLimit(model);
+      if (originalTokenCount < threshold * effectiveLimit) {
         return {
           newHistory: null,
           info: {
@@ -320,7 +329,7 @@ export class ChatCompressionService {
 
     const splitPoint = findCompressSplitPoint(
       truncatedHistory,
-      1 - COMPRESSION_PRESERVE_THRESHOLD,
+      1 - getPreserveThreshold(config),
     );
 
     const historyToCompressTruncated = truncatedHistory.slice(0, splitPoint);
@@ -343,8 +352,11 @@ export class ChatCompressionService {
       originalHistoryToCompress.flatMap((c) => c.parts || []),
     );
 
+    const effectiveLimitForSummarizer = config.isLocalMode()
+      ? config.getLocalContextLimit()
+      : tokenLimit(model);
     const historyForSummarizer =
-      originalToCompressTokenCount < tokenLimit(model)
+      originalToCompressTokenCount < effectiveLimitForSummarizer
         ? originalHistoryToCompress
         : historyToCompressTruncated;
 
@@ -476,4 +488,18 @@ export class ChatCompressionService {
       };
     }
   }
+}
+
+/**
+ * --- LOCAL FORK ADDITION (Phase 1.9) ---
+ * Returns the fraction of recent history to preserve raw after a compression
+ * pass. Defers to the local-mode override (config.getLocalPreserveFraction)
+ * when in local mode; otherwise returns the upstream cloud default. Centralized
+ * here so the compression flow only changes ONE inline reference.
+ */
+function getPreserveThreshold(config: Config): number {
+  if (config.isLocalMode()) {
+    return config.getLocalPreserveFraction();
+  }
+  return COMPRESSION_PRESERVE_THRESHOLD;
 }

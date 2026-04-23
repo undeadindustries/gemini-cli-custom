@@ -257,6 +257,22 @@ describe('Gemini Client (client.ts)', () => {
       getEnableHooks: vi.fn().mockReturnValue(false),
       getChatCompression: vi.fn().mockReturnValue(undefined),
       getCompressionThreshold: vi.fn().mockReturnValue(undefined),
+      // --- LOCAL FORK ADDITION (Phase 2.0) ---
+      // Default mocks so the new pre-turn budget / write-file ejection /
+      // adaptive-threshold paths early-return cleanly in non-local tests.
+      isLocalMode: vi.fn().mockReturnValue(false),
+      getLocalContextLimit: vi.fn().mockReturnValue(32768),
+      getLocalPreTurnBudgetEnabled: vi.fn().mockReturnValue(false),
+      getLocalPreTurnBudgetReservedResponseTokens: vi
+        .fn()
+        .mockReturnValue(4096),
+      getLocalPreTurnBudgetProactiveCompressAt: vi.fn().mockReturnValue(0.8),
+      getLocalWriteFileEjectionEnabled: vi.fn().mockReturnValue(false),
+      getLocalWriteFileEjectionMinAgeTurns: vi.fn().mockReturnValue(1),
+      getLocalWriteFileEjectionMinTokensPerCall: vi.fn().mockReturnValue(200),
+      getLocalAdaptiveCompressionEnabled: vi.fn().mockReturnValue(false),
+      getEffectiveCompressionThreshold: vi.fn().mockResolvedValue(undefined),
+      recordCompressionResult: vi.fn(),
       getSkipNextSpeakerCheck: vi.fn().mockReturnValue(false),
       getShowModelInfoInChat: vi.fn().mockReturnValue(false),
       getProjectRoot: vi.fn().mockReturnValue('/test/project/root'),

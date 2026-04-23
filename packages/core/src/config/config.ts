@@ -26,6 +26,8 @@ import {
   type VertexAiRoutingConfig,
 } from '../core/contentGenerator.js';
 import type { OverageStrategy } from '../billing/billing.js';
+import type { LocalModelInfo } from '../core/localModelDiscovery.js';
+import { discoverAndStoreLocalModels } from '../core/localModelBridge.js';
 import { PromptRegistry } from '../prompts/prompt-registry.js';
 import { ResourceRegistry } from '../resources/resource-registry.js';
 import { ToolRegistry } from '../tools/tool-registry.js';
@@ -456,6 +458,19 @@ import {
   DEFAULT_MIN_PRUNABLE_TOKENS_THRESHOLD,
   DEFAULT_PROTECT_LATEST_TURN,
 } from '../context/toolOutputMaskingService.js';
+// --- LOCAL FORK ADDITION (Phase 2.0) ---
+import {
+  getLocalMaskingDefaults,
+  DEFAULT_LOCAL_MASKING_PROTECTION_FRACTION,
+  DEFAULT_LOCAL_MASKING_PRUNABLE_FRACTION,
+} from '../context/localMaskingDefaults.js';
+// --- LOCAL FORK ADDITION (Phase 2.0) ---
+import {
+  getEffectiveCompressionThreshold as adaptiveGetEffectiveCompressionThreshold,
+  recordCompressionResult as adaptiveRecordCompressionResult,
+  DEFAULT_ADAPTIVE_COOLDOWN_TURNS,
+  ADAPTIVE_THRESHOLD_FLOOR,
+} from '../context/adaptiveThreshold.js';
 
 import {
   type ExtensionLoader,
@@ -473,6 +488,47 @@ export {
 };
 
 export const DEFAULT_TRUNCATE_TOOL_OUTPUT_THRESHOLD = 40_000;
+
+/**
+ * Default compression trigger threshold (fraction of context limit) for local
+ * mode. Lower than the cloud default (0.5) because local context windows are
+ * typically much smaller and benefit from earlier compression.
+ */
+export const DEFAULT_LOCAL_COMPRESSION_THRESHOLD = 0.4;
+
+/**
+ * Default fraction of recent history to preserve raw (uncompressed) after a
+ * compression pass in local mode. Lower than the cloud default (0.3) so more
+ * of the history is summarized.
+ */
+export const DEFAULT_LOCAL_PRESERVE_FRACTION = 0.2;
+
+// --- LOCAL FORK ADDITION (Phase 2.0) ---
+/**
+ * Default reservation of tokens for the model's response when computing the
+ * pre-turn budget. Conservative enough that medium replies fit comfortably.
+ */
+export const DEFAULT_LOCAL_PRE_TURN_RESERVED_RESPONSE_TOKENS = 4_096;
+
+/**
+ * Default fraction of localContextLimit at which the pre-turn budget check
+ * triggers a proactive compression. 0.80 leaves 20% headroom for tool calls
+ * and unexpected response growth on top of the reserved response budget.
+ */
+export const DEFAULT_LOCAL_PRE_TURN_PROACTIVE_COMPRESS_AT = 0.8;
+
+/**
+ * Default minimum age (turns) before a write_file call becomes eligible for
+ * content ejection. 1 = "anything older than the latest turn".
+ */
+export const DEFAULT_LOCAL_WRITE_FILE_EJECTION_MIN_AGE_TURNS = 1;
+
+/**
+ * Default minimum estimated token count for a single write_file content
+ * payload before ejection bothers acting. Avoids touching tiny writes where
+ * the savings would be negligible.
+ */
+export const DEFAULT_LOCAL_WRITE_FILE_EJECTION_MIN_TOKENS_PER_CALL = 200;
 
 export class MCPServerConfig {
   constructor(
@@ -740,6 +796,35 @@ export interface ConfigParameters {
     agents?: AgentSettings;
   }>;
   enableConseca?: boolean;
+  localUrl?: string;
+  localModel?: string;
+  localTimeout?: number;
+  localEnableTools?: boolean;
+  localPromptMode?: string;
+  // --- LOCAL FORK ADDITION (Phase 2.0.12) ---
+  localToolCallParseMode?: string;
+  // --- END LOCAL FORK ADDITION ---
+  // --- LOCAL FORK ADDITION (Phase 2.0.13) ---
+  localTemperature?: number;
+  // --- END LOCAL FORK ADDITION ---
+  localContextLimit?: number;
+  localCompressionThreshold?: number;
+  localPreserveFraction?: number;
+  localAutoTruncateOnOverflow?: boolean;
+  // --- LOCAL FORK ADDITION (Phase 2.0) ---
+  localAdaptiveCompressionEnabled?: boolean;
+  localAdaptiveCompressionCooldownTurns?: number;
+  localAdaptiveCompressionFloor?: number;
+  localWriteFileEjectionEnabled?: boolean;
+  localWriteFileEjectionMinAgeTurns?: number;
+  localWriteFileEjectionMinTokensPerCall?: number;
+  localPreTurnBudgetEnabled?: boolean;
+  localPreTurnBudgetReservedResponseTokens?: number;
+  localPreTurnBudgetProactiveCompressAt?: number;
+  localToolOutputMaskingEnabled?: boolean;
+  localToolOutputMaskingProtectionFraction?: number;
+  localToolOutputMaskingPrunableFraction?: number;
+  localToolOutputMaskingProtectLatestTurn?: boolean;
   billing?: {
     overageStrategy?: OverageStrategy;
   };
@@ -823,6 +908,53 @@ export class Config implements McpContext, AgentLoopContext {
   private readonly cwd: string;
   private readonly bugCommand: BugCommandSettings | undefined;
   private model: string;
+  // --- LOCAL FORK ADDITION (Phase 2.0.2) ---
+  // These fields are intentionally NOT readonly so refreshLocalConfig() can
+  // hot-reload them without requiring a CLI restart. The other local.*
+  // fields below stay readonly because they're either rarely changed or
+  // would require resetting more than the ContentGenerator (e.g. the
+  // chat-compression service caches localContextLimit).
+  private localUrl: string | undefined;
+  private localModel: string | undefined;
+  private localTimeout: number;
+  private readonly localEnableTools: boolean;
+  private localPromptMode: string;
+  // --- END LOCAL FORK ADDITION ---
+  // --- LOCAL FORK ADDITION (Phase 2.0.12) ---
+  // Tool-call parser hardening mode. Mutable so refreshLocalConfig() can
+  // hot-swap it via /local toolcall <mode>. The parser reads it on every
+  // response so updates are live on the next turn — no restart needed.
+  private localToolCallParseMode: 'strict' | 'lenient' | 'loose';
+  // --- END LOCAL FORK ADDITION ---
+  // --- LOCAL FORK ADDITION (Phase 2.0.13) ---
+  // Sampling temperature forwarded to the local LLM on every request.
+  // null means "let the server decide" (vLLM defers to the model's
+  // generation_config.json, which is typically temp=1.0 for Qwen3 — too high
+  // for coding/tool-use).  Configured via local.temperature in settings.json
+  // or GEMINI_LOCAL_TEMPERATURE env var.
+  private localTemperature: number | null;
+  // --- END LOCAL FORK ADDITION ---
+  private readonly localContextLimit: number | undefined;
+  private readonly localCompressionThreshold: number | undefined;
+  private readonly localPreserveFraction: number | undefined;
+  private readonly localAutoTruncateOnOverflow: boolean;
+  // --- LOCAL FORK ADDITION (Phase 2.0) ---
+  private readonly localAdaptiveCompressionEnabled: boolean;
+  private readonly localAdaptiveCompressionCooldownTurns: number;
+  private readonly localAdaptiveCompressionFloor: number;
+  private readonly localWriteFileEjectionEnabled: boolean;
+  private readonly localWriteFileEjectionMinAgeTurns: number;
+  private readonly localWriteFileEjectionMinTokensPerCall: number;
+  private readonly localPreTurnBudgetEnabled: boolean;
+  private readonly localPreTurnBudgetReservedResponseTokens: number;
+  private readonly localPreTurnBudgetProactiveCompressAt: number;
+  private readonly localToolOutputMaskingEnabled: boolean;
+  private readonly localToolOutputMaskingProtectionFraction: number;
+  private readonly localToolOutputMaskingPrunableFraction: number;
+  private readonly localToolOutputMaskingProtectLatestTurn: boolean;
+  private discoveredLocalModels: LocalModelInfo[] = [];
+  private generatorSwapPromise: Promise<void> | null = null;
+  private localModelOverride: string | undefined;
   private readonly disableLoopDetection: boolean;
   // null = unknown (quota not fetched); true = has access; false = definitively no access
   private hasAccessToPreviewModel: boolean | null = null;
@@ -1361,6 +1493,89 @@ export class Config implements McpContext, AgentLoopContext {
       params.adk?.agentSessionNoninteractiveEnabled ?? false;
     this.agentSessionInteractiveEnabled =
       params.adk?.agentSessionInteractiveEnabled ?? false;
+    this.localUrl = params.localUrl;
+    this.localModel = params.localModel ?? 'local-model';
+    this.localTimeout = params.localTimeout ?? 120_000;
+    this.localEnableTools = params.localEnableTools ?? false;
+    this.localPromptMode = params.localPromptMode ?? 'lite';
+    // --- LOCAL FORK ADDITION (Phase 2.0.12) ---
+    // Resolve tool-call parser mode in priority order:
+    //   1. explicit constructor param (settings.json: local.toolCallParsing)
+    //   2. env var GEMINI_LOCAL_TOOL_CALL_PARSING (matches GEMINI_LOCAL_*
+    //      naming for the rest of local.* config)
+    //   3. default 'lenient' — preserves all currently-working models and
+    //      recovers Nemotron 3 / Mistral 4 without enabling the high-risk
+    //      'loose' path. See Phase 2.0.12 in AGENT.md.
+    // Invalid values fall back to 'lenient' silently rather than throwing,
+    // so a typo in user settings can never crash the local mode boot path.
+    const VALID_PARSE_MODES = ['strict', 'lenient', 'loose'] as const;
+    type ParseMode = (typeof VALID_PARSE_MODES)[number];
+    const isValidParseMode = (v: unknown): v is ParseMode =>
+      typeof v === 'string' &&
+      (VALID_PARSE_MODES as readonly string[]).includes(v);
+    const rawParseMode =
+      params.localToolCallParseMode ??
+      process.env['GEMINI_LOCAL_TOOL_CALL_PARSING'] ??
+      'lenient';
+    this.localToolCallParseMode = isValidParseMode(rawParseMode)
+      ? rawParseMode
+      : 'lenient';
+    // --- END LOCAL FORK ADDITION ---
+    // --- LOCAL FORK ADDITION (Phase 2.0.13) ---
+    {
+      const rawTemp =
+        params.localTemperature ??
+        (process.env['GEMINI_LOCAL_TEMPERATURE']
+          ? parseFloat(process.env['GEMINI_LOCAL_TEMPERATURE'])
+          : undefined);
+      this.localTemperature =
+        rawTemp !== undefined &&
+        isFinite(rawTemp) &&
+        rawTemp >= 0 &&
+        rawTemp <= 2
+          ? rawTemp
+          : null;
+    }
+    // --- END LOCAL FORK ADDITION ---
+    this.localContextLimit = params.localContextLimit;
+    this.localCompressionThreshold = params.localCompressionThreshold;
+    this.localPreserveFraction = params.localPreserveFraction;
+    this.localAutoTruncateOnOverflow =
+      params.localAutoTruncateOnOverflow ?? true;
+    // --- LOCAL FORK ADDITION (Phase 2.0) ---
+    this.localAdaptiveCompressionEnabled =
+      params.localAdaptiveCompressionEnabled ?? true;
+    this.localAdaptiveCompressionCooldownTurns =
+      params.localAdaptiveCompressionCooldownTurns ??
+      DEFAULT_ADAPTIVE_COOLDOWN_TURNS;
+    this.localAdaptiveCompressionFloor =
+      params.localAdaptiveCompressionFloor ?? ADAPTIVE_THRESHOLD_FLOOR;
+    this.localWriteFileEjectionEnabled =
+      params.localWriteFileEjectionEnabled ?? true;
+    this.localWriteFileEjectionMinAgeTurns =
+      params.localWriteFileEjectionMinAgeTurns ??
+      DEFAULT_LOCAL_WRITE_FILE_EJECTION_MIN_AGE_TURNS;
+    this.localWriteFileEjectionMinTokensPerCall =
+      params.localWriteFileEjectionMinTokensPerCall ??
+      DEFAULT_LOCAL_WRITE_FILE_EJECTION_MIN_TOKENS_PER_CALL;
+    this.localPreTurnBudgetEnabled = params.localPreTurnBudgetEnabled ?? true;
+    this.localPreTurnBudgetReservedResponseTokens =
+      params.localPreTurnBudgetReservedResponseTokens ??
+      DEFAULT_LOCAL_PRE_TURN_RESERVED_RESPONSE_TOKENS;
+    this.localPreTurnBudgetProactiveCompressAt =
+      params.localPreTurnBudgetProactiveCompressAt ??
+      DEFAULT_LOCAL_PRE_TURN_PROACTIVE_COMPRESS_AT;
+    this.localToolOutputMaskingEnabled =
+      params.localToolOutputMaskingEnabled ?? true;
+    this.localToolOutputMaskingProtectionFraction =
+      params.localToolOutputMaskingProtectionFraction ??
+      DEFAULT_LOCAL_MASKING_PROTECTION_FRACTION;
+    this.localToolOutputMaskingPrunableFraction =
+      params.localToolOutputMaskingPrunableFraction ??
+      DEFAULT_LOCAL_MASKING_PRUNABLE_FRACTION;
+    this.localToolOutputMaskingProtectLatestTurn =
+      params.localToolOutputMaskingProtectLatestTurn ?? true;
+
     this.retryFetchErrors = params.retryFetchErrors ?? true;
     this.maxAttempts = Math.min(
       params.maxAttempts ?? DEFAULT_MAX_ATTEMPTS,
@@ -1561,6 +1776,22 @@ export class Config implements McpContext, AgentLoopContext {
     baseUrl?: string,
     customHeaders?: Record<string, string>,
   ) {
+    // Local LLM bypass: skip full auth chain when routing to a local endpoint
+    if (this.isLocalMode() || authMethod === AuthType.LOCAL) {
+      const localConfig: ContentGeneratorConfig = {
+        authType: AuthType.LOCAL,
+      };
+      this.contentGenerator = await createContentGenerator(
+        localConfig,
+        this,
+        this.getSessionId(),
+      );
+      this.contentGeneratorConfig = localConfig;
+      this.baseLlmClient = new BaseLlmClient(this.contentGenerator, this);
+      await discoverAndStoreLocalModels(this);
+      return;
+    }
+
     // Reset availability service when switching auth
     this.modelAvailabilityService.reset();
 
@@ -2595,6 +2826,14 @@ export class Config implements McpContext, AgentLoopContext {
   }
 
   async getToolOutputMaskingConfig(): Promise<ToolOutputMaskingConfig> {
+    // --- LOCAL FORK ADDITION (Phase 2.0) ---
+    // In local mode, scale masking thresholds to the local context window so
+    // the existing ToolOutputMaskingService actually engages. Cloud defaults
+    // (50K protection + 30K prunable) are larger than most local windows.
+    if (this.isLocalMode() && this.localToolOutputMaskingEnabled) {
+      return getLocalMaskingDefaults(this);
+    }
+
     await this.ensureExperimentsLoaded();
 
     const remoteProtection =
@@ -2924,6 +3163,152 @@ export class Config implements McpContext, AgentLoopContext {
   getProxy(): string | undefined {
     return this.proxy;
   }
+
+  getLocalUrl(): string | undefined {
+    return this.localUrl;
+  }
+
+  getLocalModel(): string {
+    return this.localModelOverride ?? this.localModel ?? 'local-model';
+  }
+
+  getLocalTimeout(): number {
+    return this.localTimeout;
+  }
+
+  isLocalMode(): boolean {
+    return !!this.localUrl;
+  }
+
+  isLocalToolsEnabled(): boolean {
+    return this.localEnableTools;
+  }
+
+  getLocalPromptMode(): string {
+    return this.localPromptMode;
+  }
+
+  // --- LOCAL FORK ADDITION (Phase 2.0.12) ---
+  /**
+   * Returns the active tool-call parser mode for content-side fallback
+   * recovery. See Phase 2.0.12 notes / parseXmlToolCalls in
+   * localLlmContentGenerator.ts for the meaning of each mode.
+   */
+  getLocalToolCallParseMode(): 'strict' | 'lenient' | 'loose' {
+    return this.localToolCallParseMode;
+  }
+  // --- END LOCAL FORK ADDITION ---
+
+  // --- LOCAL FORK ADDITION (Phase 2.0.13) ---
+  /**
+   * Returns the temperature to send to the local LLM, or null if unset
+   * (meaning vLLM will use the model's generation_config.json default).
+   *
+   * Configured via `local.temperature` in settings.json or the
+   * GEMINI_LOCAL_TEMPERATURE env var.  Valid range: 0 – 2.
+   */
+  getLocalTemperature(): number | null {
+    return this.localTemperature;
+  }
+  // --- END LOCAL FORK ADDITION ---
+
+  getLocalContextLimit(): number {
+    if (this.localContextLimit !== undefined) {
+      return this.localContextLimit;
+    }
+    const activeModel = this.getLocalModel();
+    const discovered = this.discoveredLocalModels.find(
+      (m) => m.localId === activeModel || m.id === activeModel,
+    );
+    if (discovered?.maxModelLen) {
+      return discovered.maxModelLen;
+    }
+    return 32768;
+  }
+
+  getDiscoveredLocalModels(): LocalModelInfo[] {
+    return this.discoveredLocalModels;
+  }
+
+  setDiscoveredLocalModels(models: LocalModelInfo[]): void {
+    this.discoveredLocalModels = models;
+  }
+
+  getGeneratorSwapPromise(): Promise<void> | null {
+    return this.generatorSwapPromise;
+  }
+
+  setGeneratorSwapPromise(p: Promise<void> | null): void {
+    this.generatorSwapPromise = p;
+  }
+
+  setLocalModelOverride(model: string): void {
+    this.localModelOverride = model;
+  }
+
+  // --- LOCAL FORK ADDITION (Phase 2.0.2) ---
+  /**
+   * Hot-reloads the live local LLM configuration without requiring a CLI
+   * restart. Updates the cached fields and rebuilds the ContentGenerator via
+   * refreshAuth(LOCAL) so subsequent turns use the new endpoint/model/prompt.
+   *
+   * Pass only the fields you want to change; undefined fields are left alone.
+   *
+   * Throws if refreshAuth fails (e.g. unreachable URL); callers should catch
+   * and surface the error to the user. On failure the field updates are
+   * preserved so the user can see and correct the bad value in /local.
+   */
+  async refreshLocalConfig(updates: {
+    url?: string;
+    model?: string;
+    promptMode?: string;
+    timeout?: number;
+    // --- LOCAL FORK ADDITION (Phase 2.0.12) ---
+    toolCallParseMode?: string;
+    // --- END LOCAL FORK ADDITION ---
+    // --- LOCAL FORK ADDITION (Phase 2.0.13) ---
+    temperature?: number | null;
+    // --- END LOCAL FORK ADDITION ---
+  }): Promise<void> {
+    if (updates.url !== undefined) this.localUrl = updates.url;
+    if (updates.model !== undefined) this.localModel = updates.model;
+    if (updates.promptMode !== undefined)
+      this.localPromptMode = updates.promptMode;
+    // --- LOCAL FORK ADDITION (Phase 2.0.6) ---
+    // timeout does not require a ContentGenerator rebuild — fetchWithTimeout
+    // reads this.config.getLocalTimeout() on every request, so updating the
+    // field is sufficient. We intentionally skip refreshAuth() here.
+    if (updates.timeout !== undefined) this.localTimeout = updates.timeout;
+    // --- END LOCAL FORK ADDITION ---
+    // --- LOCAL FORK ADDITION (Phase 2.0.12) ---
+    // toolCallParseMode also does not require a ContentGenerator rebuild —
+    // parseXmlToolCalls reads this.config.getLocalToolCallParseMode() on
+    // every response. Validate the input; silently keep the existing value
+    // on invalid input rather than corrupting the field.
+    if (updates.toolCallParseMode !== undefined) {
+      const v = updates.toolCallParseMode;
+      if (v === 'strict' || v === 'lenient' || v === 'loose') {
+        this.localToolCallParseMode = v;
+      }
+    }
+    // --- END LOCAL FORK ADDITION ---
+    // --- LOCAL FORK ADDITION (Phase 2.0.13) ---
+    // temperature does not require a ContentGenerator rebuild — request bodies
+    // read this.config.getLocalTemperature() on every call.
+    // null explicitly clears back to "server decides".
+    if (updates.temperature !== undefined)
+      this.localTemperature = updates.temperature;
+    // --- END LOCAL FORK ADDITION ---
+    if (
+      this.isLocalMode() &&
+      (updates.url !== undefined ||
+        updates.model !== undefined ||
+        updates.promptMode !== undefined)
+    ) {
+      await this.refreshAuth(AuthType.LOCAL);
+    }
+  }
+  // --- END LOCAL FORK ADDITION ---
 
   getWorkingDir(): string {
     return this.cwd;
@@ -3268,6 +3653,10 @@ export class Config implements McpContext, AgentLoopContext {
       return this.compressionThreshold;
     }
 
+    if (this.isLocalMode() && this.localCompressionThreshold !== undefined) {
+      return this.localCompressionThreshold;
+    }
+
     await this.ensureExperimentsLoaded();
 
     const remoteThreshold =
@@ -3276,7 +3665,122 @@ export class Config implements McpContext, AgentLoopContext {
     if (remoteThreshold === 0) {
       return undefined;
     }
-    return remoteThreshold;
+    if (remoteThreshold !== undefined) {
+      return remoteThreshold;
+    }
+
+    if (this.isLocalMode()) {
+      return DEFAULT_LOCAL_COMPRESSION_THRESHOLD;
+    }
+    return undefined;
+  }
+
+  getLocalPreserveFraction(): number {
+    if (this.localPreserveFraction !== undefined) {
+      return this.localPreserveFraction;
+    }
+    return DEFAULT_LOCAL_PRESERVE_FRACTION;
+  }
+
+  getLocalAutoTruncateOnOverflow(): boolean {
+    return this.localAutoTruncateOnOverflow;
+  }
+
+  // --- LOCAL FORK ADDITION (Phase 2.0) ---
+  getLocalAdaptiveCompressionEnabled(): boolean {
+    return this.localAdaptiveCompressionEnabled;
+  }
+
+  /**
+   * Wrapper around getCompressionThreshold() that applies adaptive tightening
+   * when local mode is active and the user hasn't pinned a value explicitly.
+   * Falls back to the base threshold in every error / disabled case.
+   *
+   * @param turnIndex Monotonic counter (e.g. chat history length) for cooldown.
+   */
+  async getEffectiveCompressionThreshold(
+    turnIndex: number,
+  ): Promise<number | undefined> {
+    const base = await this.getCompressionThreshold();
+    if (base === undefined) return base;
+    if (!this.isLocalMode()) return base;
+    if (!this.localAdaptiveCompressionEnabled) return base;
+    try {
+      return adaptiveGetEffectiveCompressionThreshold(base, {
+        sessionId: this.getSessionId(),
+        currentTurnIndex: turnIndex,
+        userOverridePresent:
+          this.compressionThreshold !== undefined ||
+          this.localCompressionThreshold !== undefined,
+        cooldownTurns: this.localAdaptiveCompressionCooldownTurns,
+        floor: this.localAdaptiveCompressionFloor,
+      });
+    } catch {
+      return base;
+    }
+  }
+
+  /**
+   * Record the outcome of a compression pass into the adaptive tracker. Safe
+   * no-op outside local mode or when adaptive compression is disabled.
+   */
+  recordCompressionResult(
+    originalTokenCount: number,
+    newTokenCount: number,
+    turnIndex: number,
+  ): void {
+    if (!this.isLocalMode()) return;
+    if (!this.localAdaptiveCompressionEnabled) return;
+    try {
+      adaptiveRecordCompressionResult(
+        this.getSessionId(),
+        originalTokenCount,
+        newTokenCount,
+        turnIndex,
+      );
+    } catch {
+      // Telemetry-only path; never throw.
+    }
+  }
+
+  getLocalWriteFileEjectionEnabled(): boolean {
+    return this.localWriteFileEjectionEnabled;
+  }
+
+  getLocalWriteFileEjectionMinAgeTurns(): number {
+    return this.localWriteFileEjectionMinAgeTurns;
+  }
+
+  getLocalWriteFileEjectionMinTokensPerCall(): number {
+    return this.localWriteFileEjectionMinTokensPerCall;
+  }
+
+  getLocalPreTurnBudgetEnabled(): boolean {
+    return this.localPreTurnBudgetEnabled;
+  }
+
+  getLocalPreTurnBudgetReservedResponseTokens(): number {
+    return this.localPreTurnBudgetReservedResponseTokens;
+  }
+
+  getLocalPreTurnBudgetProactiveCompressAt(): number {
+    return this.localPreTurnBudgetProactiveCompressAt;
+  }
+
+  getLocalToolOutputMaskingEnabled(): boolean {
+    return this.localToolOutputMaskingEnabled;
+  }
+
+  getLocalToolOutputMaskingProtectionFraction(): number {
+    return this.localToolOutputMaskingProtectionFraction;
+  }
+
+  getLocalToolOutputMaskingPrunableFraction(): number {
+    return this.localToolOutputMaskingPrunableFraction;
+  }
+
+  getLocalToolOutputMaskingProtectLatestTurn(): boolean {
+    return this.localToolOutputMaskingProtectLatestTurn;
   }
 
   async getUserCaching(): Promise<boolean | undefined> {
@@ -3625,10 +4129,12 @@ export class Config implements McpContext, AgentLoopContext {
   }
 
   getTruncateToolOutputThreshold(): number {
+    const limit = this.isLocalMode()
+      ? this.getLocalContextLimit()
+      : tokenLimit(this.model);
     return Math.min(
       // Estimate remaining context window in characters (1 token ~= 4 chars).
-      4 *
-        (tokenLimit(this.model) - uiTelemetryService.getLastPromptTokenCount()),
+      4 * (limit - uiTelemetryService.getLastPromptTokenCount()),
       this.truncateToolOutputThreshold,
     );
   }

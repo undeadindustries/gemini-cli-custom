@@ -11,6 +11,9 @@ import {
   debugLogger,
   getChannelFromVersion,
   RELEASE_CHANNEL_STABILITY,
+  LOCAL_CLI_NAME,
+  LOCAL_CLI_VERSION,
+  LOCAL_CLI_REPO,
 } from '@google/gemini-cli-core';
 import type { LoadedSettings } from '../../config/settings.js';
 import { fileURLToPath } from 'node:url';
@@ -53,6 +56,53 @@ function getBestAvailableUpdate(
   return semver.gt(stable, nightly) ? stable : nightly;
 }
 
+/**
+ * Checks the fork's GitHub releases for a newer version of gemini-cli-local.
+ * Returns null when up-to-date, on error, or when the API is unreachable.
+ */
+async function checkLocalForkUpdate(): Promise<UpdateObject | null> {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), FETCH_TIMEOUT_MS);
+
+  try {
+    const resp = await fetch(
+      `https://api.github.com/repos/${LOCAL_CLI_REPO}/releases/latest`,
+      {
+        headers: { Accept: 'application/vnd.github.v3+json' },
+        signal: controller.signal,
+      },
+    );
+    if (!resp.ok) return null;
+
+    // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion
+    const data = (await resp.json()) as { tag_name?: string };
+    const tagName = data.tag_name;
+    if (!tagName) return null;
+
+    const latestRemote = semver.clean(tagName);
+    if (!latestRemote) return null;
+
+    if (semver.gt(latestRemote, LOCAL_CLI_VERSION)) {
+      const message = `${LOCAL_CLI_NAME} update available! ${LOCAL_CLI_VERSION} → ${latestRemote}\nRunning from a local git clone. Please update with "git pull".`;
+      return {
+        message,
+        update: {
+          latest: latestRemote,
+          current: LOCAL_CLI_VERSION,
+          name: LOCAL_CLI_NAME,
+          type: semver.diff(latestRemote, LOCAL_CLI_VERSION) || undefined,
+        },
+      };
+    }
+    return null;
+  } catch {
+    debugLogger.log('[LocalLLM] Failed to check fork updates');
+    return null;
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
 export async function checkForUpdates(
   settings: LoadedSettings,
 ): Promise<UpdateObject | null> {
@@ -64,6 +114,15 @@ export async function checkForUpdates(
     if (process.env['DEV'] === 'true') {
       return null;
     }
+
+    // In local LLM mode, check the fork's GitHub releases instead of the
+    // npm registry. This suppresses the upstream "new version available" nag.
+    const localUrl =
+      process.env['GEMINI_LOCAL_URL'] || settings.merged.local?.url;
+    if (localUrl) {
+      return await checkLocalForkUpdate();
+    }
+
     const packageJson = await getPackageJson(__dirname);
     if (!packageJson || !packageJson.name || !packageJson.version) {
       return null;

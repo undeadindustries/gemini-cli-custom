@@ -8,6 +8,7 @@ import {
   createUserContent,
   type GenerateContentConfig,
   type PartListUnion,
+  type Part,
   type Content,
   type Tool,
   type GenerateContentResponse,
@@ -44,6 +45,17 @@ import type {
 import type { ContentGenerator } from './contentGenerator.js';
 import { LoopDetectionService } from '../services/loopDetectionService.js';
 import { ChatCompressionService } from '../context/chatCompressionService.js';
+import { attemptLocalContextRecovery } from '../context/localContextRecovery.js';
+import { assessTurnBudget } from '../context/preTurnBudget.js';
+import { ejectStaleWriteFileContent } from '../context/writeFileEjection.js';
+import {
+  WRITE_FILE_TOOL_NAME,
+  ACTIVATE_SKILL_TOOL_NAME,
+  ASK_USER_TOOL_NAME,
+  ENTER_PLAN_MODE_TOOL_NAME,
+  EXIT_PLAN_MODE_TOOL_NAME,
+  MEMORY_TOOL_NAME,
+} from '../tools/tool-names.js';
 import { AgentHistoryProvider } from '../context/agentHistoryProvider.js';
 import type { ContextManager } from '../context/contextManager.js';
 import { ideContextStore } from '../ide/ideContext.js';
@@ -60,7 +72,10 @@ import type { RoutingContext } from '../routing/routingStrategy.js';
 import { debugLogger } from '../utils/debugLogger.js';
 import type { ModelConfigKey } from '../services/modelConfigService.js';
 import { ToolOutputMaskingService } from '../context/toolOutputMaskingService.js';
-import { calculateRequestTokenCount } from '../utils/tokenCalculation.js';
+import {
+  calculateRequestTokenCount,
+  estimateTokenCountSync,
+} from '../utils/tokenCalculation.js';
 import {
   applyModelSelection,
   createAvailabilityContextProvider,
@@ -659,6 +674,53 @@ export class GeminiClient {
         }
       }
     } else {
+      // --- LOCAL FORK ADDITION (Phase 2.0) ---
+      // Pre-turn budget: in local mode, project this turn's total token cost
+      // (history + request + reserved response) BEFORE sending. If the
+      // projection exceeds proactiveCompressAt of the local context window,
+      // force-compress now. This prevents the reactive compress-then-overflow
+      // loop seen on small (32K) windows when a single tool output spike
+      // pushes the next turn straight back over budget.
+      if (
+        this.config.isLocalMode() &&
+        this.config.getLocalPreTurnBudgetEnabled()
+      ) {
+        try {
+          const requestParts: Part[] = Array.isArray(request)
+            ? request.map((p) => (typeof p === 'string' ? { text: p } : p))
+            : typeof request === 'string'
+              ? [{ text: request }]
+              : [request];
+          const syncRequestTokens = estimateTokenCountSync(requestParts);
+          const assessment = assessTurnBudget({
+            currentHistoryTokens: this.getChat().getLastPromptTokenCount(),
+            estimatedRequestTokens: syncRequestTokens,
+            contextLimit: this.config.getLocalContextLimit(),
+            reservedResponseTokens:
+              this.config.getLocalPreTurnBudgetReservedResponseTokens(),
+            proactiveCompressAt:
+              this.config.getLocalPreTurnBudgetProactiveCompressAt(),
+          });
+          if (assessment.shouldCompressFirst) {
+            debugLogger.debug(
+              `[PreTurnBudget] Proactive compression: projected ${assessment.projectedTokens} tokens (${(assessment.projectedFraction * 100).toFixed(1)}% of context).`,
+            );
+            const forced = await this.tryCompressChat(prompt_id, true, signal);
+            if (forced.compressionStatus === CompressionStatus.COMPRESSED) {
+              yield { type: GeminiEventType.ChatCompressed, value: forced };
+            }
+          }
+        } catch (err) {
+          // Pre-turn budget is best-effort; never let it abort a turn. The
+          // existing reactive compression and Phase 1.9 recovery still run.
+          debugLogger.debug(
+            `[PreTurnBudget] Skipped due to error: ${
+              err instanceof Error ? err.message : String(err)
+            }`,
+          );
+        }
+      }
+
       const compressed = await this.tryCompressChat(prompt_id, false, signal);
 
       if (compressed.compressionStatus === CompressionStatus.COMPRESSED) {
@@ -666,10 +728,52 @@ export class GeminiClient {
       }
     }
 
-    const remainingTokenCount =
-      tokenLimit(modelForLimitCheck) - this.getChat().getLastPromptTokenCount();
+    const effectiveTokenLimit = this.config.isLocalMode()
+      ? this.config.getLocalContextLimit()
+      : tokenLimit(modelForLimitCheck);
+    let remainingTokenCount =
+      effectiveTokenLimit - this.getChat().getLastPromptTokenCount();
 
     await this.tryMaskToolOutputs(this.getHistory());
+
+    // --- LOCAL FORK ADDITION (Phase 2.0) ---
+    // Eject stale write_file content (replace `args.content` with a compact
+    // <file_written> marker once the call is older than minAgeTurns). The
+    // file remains on disk and the model can re-read it. This is the biggest
+    // single-turn win for code-generation sessions on small local windows.
+    if (
+      this.config.isLocalMode() &&
+      this.config.getLocalWriteFileEjectionEnabled()
+    ) {
+      try {
+        const result = ejectStaleWriteFileContent(this.getHistory(), {
+          writeFileToolName: WRITE_FILE_TOOL_NAME,
+          exemptTools: new Set([
+            ACTIVATE_SKILL_TOOL_NAME,
+            MEMORY_TOOL_NAME,
+            ASK_USER_TOOL_NAME,
+            ENTER_PLAN_MODE_TOOL_NAME,
+            EXIT_PLAN_MODE_TOOL_NAME,
+          ]),
+          protectLatestTurn: true,
+          minAgeTurns: this.config.getLocalWriteFileEjectionMinAgeTurns(),
+          minTokensPerCall:
+            this.config.getLocalWriteFileEjectionMinTokensPerCall(),
+        });
+        if (result.ejectedCount > 0) {
+          this.getChat().setHistory(result.newHistory);
+          debugLogger.debug(
+            `[WriteFileEjection] Ejected ${result.ejectedCount} write_file calls. Saved ~${result.tokensSaved.toLocaleString()} tokens.`,
+          );
+        }
+      } catch (err) {
+        debugLogger.debug(
+          `[WriteFileEjection] Skipped due to error: ${
+            err instanceof Error ? err.message : String(err)
+          }`,
+        );
+      }
+    }
 
     // Estimate tokens. For text-only requests, we estimate based on character length.
     // For requests with non-text parts (like images, tools), we use the countTokens API.
@@ -678,6 +782,31 @@ export class GeminiClient {
       this.getContentGeneratorOrFail(),
       modelForLimitCheck,
     );
+
+    // --- LOCAL FORK ADDITION (Phase 1.9) ---
+    // In local mode, attempt layered recovery before falling back to the
+    // upstream overflow hard-stop. The recovery module wraps every risky call
+    // in try/catch so this block can never throw — worst case it returns
+    // status='failed' and the existing guard below handles it.
+    if (
+      estimatedRequestTokenCount > remainingTokenCount &&
+      this.config.isLocalMode()
+    ) {
+      const recovery = await attemptLocalContextRecovery({
+        config: this.config,
+        chat: this.getChat(),
+        promptId: prompt_id,
+        signal,
+        tryCompressChat: (id, force, sig) =>
+          this.tryCompressChat(id, force, sig),
+        estimatedRequestTokenCount,
+        effectiveTokenLimit,
+      });
+      if (recovery.status !== 'failed' && recovery.info) {
+        yield { type: GeminiEventType.ChatCompressed, value: recovery.info };
+        remainingTokenCount = recovery.remainingTokenCount;
+      }
+    }
 
     if (estimatedRequestTokenCount > remainingTokenCount) {
       yield {
@@ -1178,6 +1307,26 @@ export class GeminiClient {
       this.hasFailedCompressionAttempt,
       abortSignal,
     );
+
+    // --- LOCAL FORK ADDITION (Phase 2.0) ---
+    // Record every compression outcome so the adaptive threshold tracker can
+    // tighten over time on weak compressions. Safe no-op outside local mode
+    // and defended against partial-mock test fixtures where getHistory may
+    // return undefined.
+    try {
+      const turnIndex = this.getHistory()?.length ?? 0;
+      this.config.recordCompressionResult(
+        info.originalTokenCount ?? 0,
+        info.newTokenCount ?? info.originalTokenCount ?? 0,
+        turnIndex,
+      );
+    } catch (err) {
+      debugLogger.debug(
+        `[AdaptiveThreshold] Skipped record: ${
+          err instanceof Error ? err.message : String(err)
+        }`,
+      );
+    }
 
     if (
       info.compressionStatus ===

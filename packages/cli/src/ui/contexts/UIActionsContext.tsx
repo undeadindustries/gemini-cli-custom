@@ -43,6 +43,7 @@ export interface UIActions {
   closeModelDialog: () => void;
   openVoiceModelDialog: () => void;
   closeVoiceModelDialog: () => void;
+  closeLocalDialog: () => void;
   openAgentConfigDialog: (
     name: string,
     displayName: string,

@@ -17,7 +17,11 @@ import { theme } from '../semantic-colors.js';
 import { ThemedGradient } from './ThemedGradient.js';
 import { CliSpinner } from './CliSpinner.js';
 
-import { isAppleTerminal } from '@google/gemini-cli-core';
+import {
+  isAppleTerminal,
+  LOCAL_CLI_NAME,
+  LOCAL_CLI_VERSION,
+} from '@google/gemini-cli-core';
 
 import { longAsciiLogoCompactText } from './AsciiArt.js';
 import { getAsciiArtWidth } from '../utils/textUtils.js';
@@ -109,12 +113,26 @@ export const AppHeader = ({ version, showDetails = true }: AppHeaderProps) => {
 
   const renderMetadata = (isBelow = false) => (
     <Box marginLeft={isBelow ? 0 : 2} flexDirection="column">
-      {/* Line 1: Gemini CLI vVersion [Updating] */}
+      {/* Line 1: Name + version [Updating] */}
       <Box>
-        <Text bold color={theme.text.primary}>
-          Gemini CLI
-        </Text>
-        <Text color={theme.text.secondary}> v{version}</Text>
+        {config.isLocalMode() ? (
+          <>
+            <Text bold color={theme.text.primary}>
+              {LOCAL_CLI_NAME}
+            </Text>
+            <Text color={theme.text.secondary}>
+              {' '}
+              v{LOCAL_CLI_VERSION} (Gemini CLI v{version})
+            </Text>
+          </>
+        ) : (
+          <>
+            <Text bold color={theme.text.primary}>
+              Gemini CLI
+            </Text>
+            <Text color={theme.text.secondary}> v{version}</Text>
+          </>
+        )}
         {updateInfo?.isUpdating && (
           <Box marginLeft={2}>
             <Text color={theme.text.secondary}>
