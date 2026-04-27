@@ -3394,6 +3394,17 @@ export class Config implements McpContext, AgentLoopContext {
         apiKeyEnvVar: string;
         wireFormat: 'openai-chat' | 'gemini' | 'anthropic-messages';
         authType: AuthType;
+        // --- LOCAL FORK ADDITION (Phase 2.3.1: per-provider sampler) ---
+        // `undefined` means "user has not set one — let the server
+        // decide". The OpenAI-compat content generator omits the
+        // `temperature` field from the request body in that case.
+        temperature?: number;
+        // --- END LOCAL FORK ADDITION ---
+        // --- LOCAL FORK ADDITION (Phase 2.3.2: per-provider tool-call parser) ---
+        // `undefined` means "not set at this level — fall back to
+        // global legacy default inside getLocalToolCallParseMode()".
+        toolCallParsing?: 'strict' | 'lenient' | 'loose';
+        // --- END LOCAL FORK ADDITION ---
       }
     | undefined {
     if (this.providersActive) {
@@ -3411,7 +3422,13 @@ export class Config implements McpContext, AgentLoopContext {
           model: r.model || 'local-model',
           contextLimit: r.contextLimit,
           promptMode: r.promptMode,
-          parserMode: this.localToolCallParseMode,
+          // --- LOCAL FORK ADDITION (Phase 2.3.2: per-provider parser priority) ---
+          // Prefer the per-provider toolCallParsing over the global legacy
+          // setting. The global is kept as the fallback so existing users
+          // who set GEMINI_LOCAL_TOOL_CALL_PARSING or local.toolCallParsing
+          // don't lose their config after upgrading.
+          parserMode: r.toolCallParsing ?? this.localToolCallParseMode,
+          // --- END LOCAL FORK ADDITION ---
           timeout: r.timeout,
           enableTools: r.enableTools,
           displayName: r.definition.displayName,
@@ -3420,6 +3437,12 @@ export class Config implements McpContext, AgentLoopContext {
           apiKeyEnvVar: r.definition.apiKeyEnvVar,
           wireFormat: r.definition.wireFormat,
           authType: r.definition.authType,
+          // --- LOCAL FORK ADDITION (Phase 2.3.1: per-provider sampler) ---
+          temperature: r.temperature,
+          // --- END LOCAL FORK ADDITION ---
+          // --- LOCAL FORK ADDITION (Phase 2.3.2: per-provider tool-call parser) ---
+          toolCallParsing: r.toolCallParsing,
+          // --- END LOCAL FORK ADDITION ---
         };
       } catch {
         // resolveProvider throws on malformed config or unknown id;
@@ -3452,6 +3475,18 @@ export class Config implements McpContext, AgentLoopContext {
         apiKeyEnvVar: '',
         wireFormat: 'openai-chat',
         authType: AuthType.LOCAL,
+        // --- LOCAL FORK ADDITION (Phase 2.3.1: per-provider sampler) ---
+        // Pre-2.2 users still on the legacy `local.*` block surface
+        // their `local.temperature` here so the request body picks it
+        // up. `null` (the legacy "explicit clear" sentinel) maps to
+        // undefined so the server-decides path is preserved.
+        temperature: this.localTemperature ?? undefined,
+        // --- END LOCAL FORK ADDITION ---
+        // --- LOCAL FORK ADDITION (Phase 2.3.2: per-provider tool-call parser) ---
+        // Legacy path has no per-provider setting; leave undefined so
+        // getLocalToolCallParseMode() uses the global legacy value.
+        toolCallParsing: undefined,
+        // --- END LOCAL FORK ADDITION ---
       };
     }
     return undefined;
@@ -3541,6 +3576,15 @@ export class Config implements McpContext, AgentLoopContext {
    * localLlmContentGenerator.ts for the meaning of each mode.
    */
   getLocalToolCallParseMode(): 'strict' | 'lenient' | 'loose' {
+    // --- LOCAL FORK ADDITION (Phase 2.3.2: per-provider parser priority) ---
+    // Prefer the per-provider toolCallParsing when the active provider
+    // has one set explicitly. Fall back to the global legacy setting
+    // (driven by GEMINI_LOCAL_TOOL_CALL_PARSING or /local toolcall).
+    const effective = this.getEffectiveProviderConfig();
+    if (effective?.toolCallParsing) {
+      return effective.toolCallParsing;
+    }
+    // --- END LOCAL FORK ADDITION ---
     return this.localToolCallParseMode;
   }
   // --- END LOCAL FORK ADDITION ---
@@ -3554,6 +3598,21 @@ export class Config implements McpContext, AgentLoopContext {
    * GEMINI_LOCAL_TEMPERATURE env var.  Valid range: 0 – 2.
    */
   getLocalTemperature(): number | null {
+    // --- LOCAL FORK ADDITION (Phase 2.3.1: per-provider sampler) ---
+    // Prefer the active provider's `providers.<id>.temperature` over
+    // the legacy global `local.temperature`. This is what the dialog's
+    // Edit screen writes to for OpenAI-compat / custom providers, and
+    // what `getEffectiveProviderConfig()` surfaces to the request
+    // builder. The legacy field stays as a fallback so users on a
+    // pre-2.2 settings file still see their temperature applied until
+    // they migrate.
+    if (this.providersActive) {
+      const eff = this.getEffectiveProviderConfig();
+      if (eff && eff.temperature !== undefined) {
+        return eff.temperature;
+      }
+    }
+    // --- END LOCAL FORK ADDITION ---
     return this.localTemperature;
   }
   // --- END LOCAL FORK ADDITION ---

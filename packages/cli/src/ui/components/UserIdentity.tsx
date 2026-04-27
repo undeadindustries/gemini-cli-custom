@@ -88,11 +88,22 @@ export const UserIdentity: React.FC<UserIdentityProps> = ({ config }) => {
       */}
       {effective && (
         <Box flexDirection="column" marginLeft={2}>
+          {/* --- LOCAL FORK ADDITION (Phase 2.3.1: env-override notice) ---
+            When the user has GEMINI_PROVIDER set in their shell, every
+            app launch ignores settings.json's providers.active and uses
+            the env var instead. Without this notice they see the "wrong"
+            provider and have no idea why /provider switches don't stick
+            across restarts.
+          */}
           <Text color={theme.text.secondary} wrap="truncate-end">
             {'Active: ' +
               effective.displayName +
-              (effective.providerId ? ' (' + effective.providerId + ')' : '')}
+              (effective.providerId ? ' (' + effective.providerId + ')' : '') +
+              (process.env['GEMINI_PROVIDER']?.trim()
+                ? ' [\u26a0 overridden by $GEMINI_PROVIDER]'
+                : '')}
           </Text>
+          {/* --- END LOCAL FORK ADDITION --- */}
           <Text color={theme.text.secondary} wrap="truncate-end">
             {'Model: ' + (effective.model || '(not set)')}
           </Text>

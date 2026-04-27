@@ -2075,7 +2075,7 @@ const SETTINGS_SCHEMA = {
     requiresRestart: false,
     default: {},
     description:
-      'Deprecated as of Phase 2.2. Configure backends through `providers.*` instead. Existing values are auto-migrated on first launch.',
+      'Deprecated. Configure backends through `providers.*` instead. Existing values are auto-migrated on first launch.',
     showInDialog: false,
     properties: {
       url: {
@@ -2489,9 +2489,14 @@ const SETTINGS_SCHEMA = {
             label: 'Context Window Limit (tokens)',
             category: 'Advanced',
             requiresRestart: false,
-            default: 128000,
+            // 32768 matches customToProviderDefinition()'s runtime default
+            // and is a safe conservative value for local models. Hosted
+            // OpenAI (128k) will have an explicit override stamped in
+            // settings.json when a custom provider is added, so this
+            // default is the honest baseline shown before any override.
+            default: 32768,
             description:
-              'Maximum context window size in tokens. Used to drive smart-context compression; should match (or be lower than) the model card. Default 128000 covers gpt-4o / gpt-4o-mini.',
+              'Maximum context window size in tokens. Used to drive smart-context compression; should match (or be lower than) the model card. Auto-detected from the server when a new provider is added.',
             showInDialog: false,
           },
           compressionThreshold: {
@@ -2519,16 +2524,23 @@ const SETTINGS_SCHEMA = {
             label: 'Prompt Mode',
             category: 'Advanced',
             requiresRestart: false,
-            default: 'full',
+            // 'lite' is correct for both custom local providers (they
+            // inherit this schema via registerCustomProviderSchemaAliases)
+            // and for hosted OpenAI (the short system prompt works fine
+            // and saves tokens). Matches the resolveProvider() default.
+            default: 'lite',
             description:
-              'System prompt size. "full" (recommended for hosted providers) sends the complete Gemini CLI prompt. "lite" sends a compact prompt — useful only for cost-sensitive deployments.',
+              'System prompt size. "lite" sends a compact prompt (~3K chars) — recommended for local models and cost-sensitive deployments. "full" sends the complete Gemini CLI prompt (~15–20K chars) for maximum capability.',
             showInDialog: false,
             options: [
               {
-                value: 'full',
-                label: 'Full (recommended for hosted providers)',
+                value: 'lite',
+                label: 'Lite (recommended for local and cost-sensitive use)',
               },
-              { value: 'lite', label: 'Lite (compact, cost-sensitive)' },
+              {
+                value: 'full',
+                label: 'Full (complete Gemini CLI prompt)',
+              },
             ],
           },
           enableTools: {
@@ -2551,6 +2563,53 @@ const SETTINGS_SCHEMA = {
               'Timeout in milliseconds for requests to OpenAI. Most chats complete in under 30s; the larger default accommodates long o-series reasoning calls.',
             showInDialog: false,
           },
+          // --- LOCAL FORK ADDITION (Phase 2.3.1: per-provider sampler) ---
+          temperature: {
+            type: 'number',
+            label: 'Sampling Temperature',
+            category: 'Advanced',
+            requiresRestart: false,
+            // `undefined` means "let the server decide" — the request
+            // builder omits the field from the JSON body in that case.
+            // Keeping the default unset (rather than 0.7 etc.) preserves
+            // each model's native generation_config.json behavior until
+            // the user explicitly opts in.
+            default: undefined,
+            description:
+              "Sampling temperature forwarded to the provider on every request (0.0 – 2.0). Lower values are more deterministic; 0.6 is a common sweet spot for Qwen3-style coding/tool-use, 0.7-1.0 for general OpenAI chat. Leave unset to use the model's own server-side default. Custom OpenAI-compat providers inherit this same field via the schema-alias system.",
+            showInDialog: false,
+          },
+          // --- LOCAL FORK ADDITION (Phase 2.3.2: tool-call parser per provider) ---
+          toolCallParsing: {
+            type: 'enum',
+            label: 'Tool-call Parser Mode',
+            category: 'Advanced',
+            requiresRestart: false,
+            // 'strict' is the safest default: only matches proper
+            // <tool_call>…</tool_call> wrappers. 'lenient' also
+            // recovers gated bare-function blocks; 'loose' matches any
+            // <function=…> block. Upgrade to lenient/loose per-model if
+            // you see tool calls arriving as raw text.
+            default: 'strict',
+            description:
+              'How aggressively to recover tool calls that arrived as raw text instead of structured tool_calls. "strict" only matches <tool_call>…</tool_call> wrappers (zero false-positive risk). "lenient" also recovers gated bare-function blocks (good for Nemotron/Mistral). "loose" matches any <function=…> block (highest recovery, small documentation-injection risk).',
+            showInDialog: false,
+            options: [
+              {
+                value: 'strict',
+                label: 'Strict (wrapped tool_call only, safest)',
+              },
+              {
+                value: 'lenient',
+                label: 'Lenient (gated bare-block recovery)',
+              },
+              {
+                value: 'loose',
+                label: 'Loose (match any function block)',
+              },
+            ],
+          },
+          // --- END LOCAL FORK ADDITION ---
         },
       },
       // --- LOCAL FORK ADDITION (Phase 2.3) ---

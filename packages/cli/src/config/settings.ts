@@ -821,7 +821,7 @@ function applyLegacyLocalPresetMigration(
   } catch (error) {
     coreEvents.emitFeedback(
       'warning',
-      `Could not back up settings before Phase 2.3 migration: ${getFsErrorMessage(error)}`,
+      `Could not back up settings before preset migration: ${getFsErrorMessage(error)}`,
       error,
     );
   }
@@ -839,7 +839,7 @@ function applyLegacyLocalPresetMigration(
   } catch (error) {
     coreEvents.emitFeedback(
       'error',
-      `Failed to persist Phase 2.3 preset migration: ${getFsErrorMessage(error)}. ` +
+      `Failed to persist preset migration: ${getFsErrorMessage(error)}. ` +
         `In-memory settings are correct; migration will be retried on next launch.`,
       error,
     );

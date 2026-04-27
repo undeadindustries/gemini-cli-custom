@@ -261,7 +261,7 @@ const ProviderUsageTable: React.FC<ProviderUsageTableProps> = ({
         Provider Usage
       </Text>
       <Text color={theme.text.secondary}>
-        Per-provider rollup (Phase 2.2). Use /provider list to switch.
+        Per-provider token usage. Use /provider list to switch.
       </Text>
       <Box height={1} />
 
