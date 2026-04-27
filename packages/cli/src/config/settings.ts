@@ -49,6 +49,8 @@ export {
 import { resolveEnvVarsInObject } from '../utils/envVarResolver.js';
 import { customDeepMerge } from '../utils/deepMerge.js';
 import { updateSettingsFilePreservingFormat } from '../utils/commentJson.js';
+import { migrateLegacyLocalSettings } from './migrateLegacyLocalSettings.js';
+import { migrateLegacyLocalPresets } from './migrateLegacyLocalPresets.js';
 import {
   validateSettings,
   formatValidationError,
@@ -703,6 +705,153 @@ export function isWorktreeEnabled(settings: LoadedSettings): boolean {
   return settings.merged.experimental.worktrees;
 }
 
+// --- LOCAL FORK ADDITION (Phase 2.2: legacy local.* migration) ---
+/**
+ * Applies the one-time `local.*` → `providers.local-vllm.*` migration to
+ * a `load()` result. Rewrites the file on disk and creates a
+ * `settings.json.pre-2.2.bak` copy on the first run, then returns the
+ * load result with the migrated settings substituted in so the rest of
+ * `_doLoadSettings()` proceeds against the new shape.
+ *
+ * If migration fails to persist (disk full, permissions, etc.) we still
+ * return the migrated in-memory settings so the session works; the user
+ * just gets re-migrated on the next launch.
+ */
+function applyLegacyLocalMigration(
+  loadResult: { settings: Settings; rawJson?: string },
+  settingsPath: string,
+): { settings: Settings; rawJson?: string } {
+  const migration = migrateLegacyLocalSettings(
+    // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion -- runtime-safe: Settings is always a JSON object at the top level (loadSettings() validated this before reaching here, see line ~840); the migration helper reads only legacy `local.*` keys via Record<string, unknown>
+    loadResult.settings as unknown as Record<string, unknown>,
+  );
+  if (!migration.migrated) {
+    return loadResult;
+  }
+
+  // Best-effort backup. We do this before the format-preserving update
+  // so a partial write at least leaves the original recoverable.
+  try {
+    if (loadResult.rawJson !== undefined && fs.existsSync(settingsPath)) {
+      const backupPath = `${settingsPath}.pre-2.2.bak`;
+      // Only write the backup if one isn't already there — a previous
+      // failed migration shouldn't overwrite the genuine pre-2.2 copy.
+      if (!fs.existsSync(backupPath)) {
+        fs.writeFileSync(backupPath, loadResult.rawJson, 'utf-8');
+      }
+    }
+  } catch (error) {
+    coreEvents.emitFeedback(
+      'warning',
+      `Could not back up settings before migration: ${getFsErrorMessage(error)}`,
+      error,
+    );
+  }
+
+  try {
+    updateSettingsFilePreservingFormat(settingsPath, migration.newSettings);
+    const migratedSummary = migration.migratedKeys
+      .map((k) => `local.${k.from} → providers.local-vllm.${k.to}`)
+      .join(', ');
+    coreEvents.emitFeedback(
+      'info',
+      `Migrated legacy local.* settings to providers.local-vllm.*` +
+        (migratedSummary ? ` (${migratedSummary})` : '') +
+        `. Backup at ${settingsPath}.pre-2.2.bak.`,
+    );
+    if (migration.droppedKeys.length > 0) {
+      coreEvents.emitFeedback(
+        'warning',
+        `The following legacy keys did not map to a provider setting and ` +
+          `were dropped during migration: ${migration.droppedKeys
+            .map((k) => `local.${k}`)
+            .join(', ')}. Re-set them via env vars if needed.`,
+      );
+    }
+  } catch (error) {
+    coreEvents.emitFeedback(
+      'error',
+      `Failed to persist migrated local.* settings: ${getFsErrorMessage(error)}. ` +
+        `In-memory settings are correct; migration will be retried on next launch.`,
+      error,
+    );
+  }
+
+  return {
+    settings: migration.newSettings as Settings,
+    rawJson: loadResult.rawJson,
+  };
+}
+// --- END LOCAL FORK ADDITION ---
+
+// --- LOCAL FORK ADDITION (Phase 2.3: legacy local-* preset migration) ---
+/**
+ * Applies the one-time `providers.local-*` (built-in preset) →
+ * `providers.custom.local-*` migration. Phase 2.3 dropped the three
+ * local-* entries from BUILT_IN_PROVIDERS, so a user upgrading from
+ * Phase 2.2 with `providers.active='local-vllm'` (or per-instance
+ * overrides under `providers.local-vllm.*`) would otherwise hit
+ * "Unknown provider 'local-vllm'" on first launch. This rewrites those
+ * presets as user-defined custom providers preserving the previous
+ * defaults and the user's overrides.
+ *
+ * Backup goes to `${path}.pre-2.3.bak`. Idempotent: subsequent runs
+ * with a `providers.custom.local-vllm` already in place are a no-op.
+ */
+function applyLegacyLocalPresetMigration(
+  loadResult: { settings: Settings; rawJson?: string },
+  settingsPath: string,
+): { settings: Settings; rawJson?: string } {
+  const migration = migrateLegacyLocalPresets(
+    // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion -- runtime-safe: Settings is always a JSON object at the top level (loadSettings() validated this before reaching here, see line ~840); the migration helper reads only legacy `providers.local-*` keys via Record<string, unknown>
+    loadResult.settings as unknown as Record<string, unknown>,
+  );
+  if (!migration.migrated) {
+    return loadResult;
+  }
+
+  // Best-effort backup before persisting the rewritten file.
+  try {
+    if (loadResult.rawJson !== undefined && fs.existsSync(settingsPath)) {
+      const backupPath = `${settingsPath}.pre-2.3.bak`;
+      if (!fs.existsSync(backupPath)) {
+        fs.writeFileSync(backupPath, loadResult.rawJson, 'utf-8');
+      }
+    }
+  } catch (error) {
+    coreEvents.emitFeedback(
+      'warning',
+      `Could not back up settings before Phase 2.3 migration: ${getFsErrorMessage(error)}`,
+      error,
+    );
+  }
+
+  try {
+    updateSettingsFilePreservingFormat(settingsPath, migration.newSettings);
+    coreEvents.emitFeedback(
+      'info',
+      `Migrated legacy local-* presets to providers.custom.* ` +
+        `(${migration.migratedIds.join(', ')}). Built-in local-vllm / ` +
+        `local-llamacpp / local-generic are now user-defined custom ` +
+        `providers — edit or remove them via /provider. Backup at ` +
+        `${settingsPath}.pre-2.3.bak.`,
+    );
+  } catch (error) {
+    coreEvents.emitFeedback(
+      'error',
+      `Failed to persist Phase 2.3 preset migration: ${getFsErrorMessage(error)}. ` +
+        `In-memory settings are correct; migration will be retried on next launch.`,
+      error,
+    );
+  }
+
+  return {
+    settings: migration.newSettings as Settings,
+    rawJson: loadResult.rawJson,
+  };
+}
+// --- END LOCAL FORK ADDITION ---
+
 /**
  * Loads settings from user and workspace directories.
  * Project settings override user settings.
@@ -801,7 +950,7 @@ function _doLoadSettings(workspaceDir: string): LoadedSettings {
 
   const systemResult = load(systemSettingsPath);
   const systemDefaultsResult = load(systemDefaultsPath);
-  const userResult = load(USER_SETTINGS_PATH);
+  let userResult = load(USER_SETTINGS_PATH);
 
   let workspaceResult: {
     settings: Settings;
@@ -815,6 +964,14 @@ function _doLoadSettings(workspaceDir: string): LoadedSettings {
   if (!storage.isWorkspaceHomeDir()) {
     workspaceResult = load(workspaceSettingsPath);
   }
+
+  // --- LOCAL FORK ADDITION (Phase 2.2: legacy local.* migration) ---
+  userResult = applyLegacyLocalMigration(userResult, USER_SETTINGS_PATH);
+  // --- END LOCAL FORK ADDITION ---
+
+  // --- LOCAL FORK ADDITION (Phase 2.3: legacy local-* preset migration) ---
+  userResult = applyLegacyLocalPresetMigration(userResult, USER_SETTINGS_PATH);
+  // --- END LOCAL FORK ADDITION ---
 
   const systemOriginalSettings = structuredClone(systemResult.rawSettings);
   const systemDefaultsOriginalSettings = structuredClone(

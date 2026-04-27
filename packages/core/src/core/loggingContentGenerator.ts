@@ -156,6 +156,26 @@ export class LoggingContentGenerator implements ContentGenerator {
     return this.wrapped;
   }
 
+  // --- LOCAL FORK ADDITION (Phase 2.2) ---
+  /**
+   * Resolves the provider id to stamp on telemetry events for the current
+   * request. Falls back through:
+   *   1. providers.active (Phase 2.2 unified registry)
+   *   2. legacy local.url present → 'local-vllm' (synthetic)
+   *   3. authType from the contentGenerator config (e.g. 'oauth-personal')
+   *   4. 'unknown' as a last resort
+   *
+   * The result is purely an observability label — no behavior depends on it.
+   */
+  private getProviderIdForEvent(): string {
+    const active = this.config.getActiveProviderId?.();
+    if (active) return active;
+    if (this.config.isLocalMode?.()) return 'local-vllm';
+    const auth = this.config.getContentGeneratorConfig?.()?.authType;
+    return auth ? String(auth) : 'unknown';
+  }
+  // --- END LOCAL FORK ADDITION ---
+
   get userTier(): UserTierId | undefined {
     return this.wrapped.userTier;
   }
@@ -256,6 +276,7 @@ export class LoggingContentGenerator implements ContentGenerator {
       usageMetadata,
       responseText,
       role,
+      this.getProviderIdForEvent(),
     );
 
     // Only compute context breakdown for turn-ending responses (when the user
@@ -348,6 +369,7 @@ export class LoggingContentGenerator implements ContentGenerator {
             (error as StructuredError).status
           : undefined,
         role,
+        this.getProviderIdForEvent(),
       ),
     );
   }

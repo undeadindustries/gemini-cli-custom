@@ -13,6 +13,7 @@ import {
   debugLogger,
   isAccountSuspendedError,
   ProjectIdRequiredError,
+  getProvider,
 } from '@google/gemini-cli-core';
 import { getErrorMessage } from '@google/gemini-cli-core';
 import { AuthState } from '../types.js';
@@ -91,19 +92,62 @@ export const useAuthCommand = (
         return;
       }
 
-      const localUrl =
+      // --- LOCAL FORK ADDITION (Phase 2.2: unified provider auto-auth) ---
+      // ONE auto-auth path covers every backend the registry knows about:
+      // localhost OpenAI-compat servers, hosted OpenAI-compat providers,
+      // AND Gemini OAuth/API-key/Vertex via the registry's `authType`
+      // discriminator. The Config layer materializes the right URL /
+      // model / key via getEffectiveProviderConfig(); useAuth just needs
+      // to (a) know which registry entry is active and (b) call
+      // refreshAuth() with that entry's AuthType.
+      //
+      // Precedence:
+      //   1. GEMINI_PROVIDER env var (matches core/getAuthTypeFromEnv).
+      //   2. providers.active in settings.json.
+      //   3. GEMINI_LOCAL_URL env var (legacy openai-compat shortcut).
+      //   4. local.url in settings.json (legacy openai-compat shortcut).
+      const providerActive =
+        process.env['GEMINI_PROVIDER']?.trim() ||
+        settings.merged.providers?.active?.trim();
+      const legacyLocalUrl =
         process.env['GEMINI_LOCAL_URL'] || settings.merged.local?.url;
-      if (localUrl) {
+      if (providerActive || legacyLocalUrl) {
         try {
-          await config.refreshAuth(AuthType.LOCAL);
-          debugLogger.log(`Authenticated via local LLM bypass (${localUrl}).`);
+          // Dispatch by the registry entry's AuthType so /provider use
+          // gemini-oauth exercises the same OAuth path as /auth's
+          // LOGIN_WITH_GOOGLE selection. Unknown / legacy entries fall
+          // through to AuthType.LOCAL (today's openai-compat path).
+          let dispatchAuthType: AuthType = AuthType.LOCAL;
+          let dispatchLabel = 'OpenAI-compat';
+          if (providerActive) {
+            const def = getProvider(providerActive);
+            if (def) {
+              dispatchAuthType = def.authType;
+              dispatchLabel = def.displayName;
+            }
+          }
+          await config.refreshAuth(dispatchAuthType);
+          if (providerActive) {
+            debugLogger.log(
+              `Authenticated via provider "${providerActive}" (${dispatchLabel}).`,
+            );
+          } else {
+            debugLogger.log(
+              `Authenticated via legacy local LLM bypass (${legacyLocalUrl}).`,
+            );
+          }
           setAuthError(null);
           setAuthState(AuthState.Authenticated);
         } catch (e) {
-          onAuthError(`Failed to initialize local LLM: ${getErrorMessage(e)}`);
+          onAuthError(
+            providerActive
+              ? `Failed to initialize provider "${providerActive}": ${getErrorMessage(e)}`
+              : `Failed to initialize local LLM: ${getErrorMessage(e)}`,
+          );
         }
         return;
       }
+      // --- END LOCAL FORK ADDITION ---
 
       const authType = settings.merged.security.auth.selectedType;
       if (!authType) {

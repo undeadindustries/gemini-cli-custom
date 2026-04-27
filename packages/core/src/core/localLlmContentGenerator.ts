@@ -675,11 +675,35 @@ export function translateToolsToOpenAI(tools: unknown): OpenAITool[] {
  *
  * Translates Gemini SDK types to/from OpenAI chat completions format.
  */
+// --- LOCAL FORK ADDITION (Phase 2.1) ---
+/**
+ * Optional Bearer-auth + extra-header bag used by hosted-provider mode.
+ * Local mode passes `undefined` and behaves identically to pre-Phase-2.1.
+ *
+ * - `apiKey`  is wrapped in an `Authorization: Bearer ${apiKey}` header.
+ * - `extraHeaders` are merged AFTER the bearer header so a provider that
+ *   needs e.g. `HTTP-Referer` (OpenRouter) or `X-Title` can override or add
+ *   without touching this class.
+ *
+ * Both sources are joined into the `Headers` object inside `fetchWithTimeout`
+ * so they ride every retry attempt of every request.
+ */
+export interface OpenAICompatAuth {
+  apiKey?: string;
+  extraHeaders?: Record<string, string>;
+}
+// --- END LOCAL FORK ADDITION ---
+
 export class LocalLlmContentGenerator implements ContentGenerator {
   constructor(
     private readonly url: string,
     private readonly model: string,
     private readonly config: Config,
+    // --- LOCAL FORK ADDITION (Phase 2.1) ---
+    // Hosted-provider Bearer auth + per-provider extra headers. Optional;
+    // when omitted the request shape is byte-identical to local mode.
+    private readonly auth?: OpenAICompatAuth,
+    // --- END LOCAL FORK ADDITION ---
   ) {}
 
   async generateContent(
@@ -702,6 +726,21 @@ export class LocalLlmContentGenerator implements ContentGenerator {
     if (temperature !== null) {
       body['temperature'] = temperature;
     }
+    // --- END LOCAL FORK ADDITION ---
+    // --- LOCAL FORK ADDITION (Phase 2.0.14) ---
+    // Forward extended sampler controls. vLLM accepts top_p (standard OpenAI),
+    // top_k, min_p, and repetition_penalty (vLLM extensions) as top-level
+    // fields. Required for GLM-4.7-Flash to suppress documented loop behavior
+    // per Z.ai's recommended sampler shape (see Unsloth docs).
+    const topP = this.config.getLocalTopP();
+    if (topP !== null) body['top_p'] = topP;
+    const topK = this.config.getLocalTopK();
+    if (topK !== null) body['top_k'] = topK;
+    const minP = this.config.getLocalMinP();
+    if (minP !== null) body['min_p'] = minP;
+    const repetitionPenalty = this.config.getLocalRepetitionPenalty();
+    if (repetitionPenalty !== null)
+      body['repetition_penalty'] = repetitionPenalty;
     // --- END LOCAL FORK ADDITION ---
 
     const response = await this.fetchWithTimeout(body);
@@ -771,6 +810,21 @@ export class LocalLlmContentGenerator implements ContentGenerator {
     if (temperature !== null) {
       body['temperature'] = temperature;
     }
+    // --- END LOCAL FORK ADDITION ---
+    // --- LOCAL FORK ADDITION (Phase 2.0.14) ---
+    // Forward extended sampler controls. vLLM accepts top_p (standard OpenAI),
+    // top_k, min_p, and repetition_penalty (vLLM extensions) as top-level
+    // fields. Required for GLM-4.7-Flash to suppress documented loop behavior
+    // per Z.ai's recommended sampler shape (see Unsloth docs).
+    const topP = this.config.getLocalTopP();
+    if (topP !== null) body['top_p'] = topP;
+    const topK = this.config.getLocalTopK();
+    if (topK !== null) body['top_k'] = topK;
+    const minP = this.config.getLocalMinP();
+    if (minP !== null) body['min_p'] = minP;
+    const repetitionPenalty = this.config.getLocalRepetitionPenalty();
+    if (repetitionPenalty !== null)
+      body['repetition_penalty'] = repetitionPenalty;
     // --- END LOCAL FORK ADDITION ---
 
     const response = await this.fetchWithTimeout(body);
@@ -1797,12 +1851,30 @@ export class LocalLlmContentGenerator implements ContentGenerator {
       const timer = setTimeout(() => controller.abort(), timeoutMs);
       try {
         const dispatcher = await this.getDispatcher();
+        // --- LOCAL FORK ADDITION (Phase 2.1) ---
+        // Hosted providers need Authorization: Bearer + optional extras.
+        // Local mode (auth === undefined) sends only Content-Type, byte-identical
+        // to the pre-Phase-2.1 request. Bearer header is built first so a
+        // provider's extraHeaders override wins (lets quirks like
+        // OpenRouter's HTTP-Referer / X-Title slot in cleanly).
+        const headers: Record<string, string> = {
+          'Content-Type': 'application/json',
+        };
+        if (this.auth?.apiKey) {
+          headers['Authorization'] = `Bearer ${this.auth.apiKey}`;
+        }
+        if (this.auth?.extraHeaders) {
+          for (const [k, v] of Object.entries(this.auth.extraHeaders)) {
+            headers[k] = v;
+          }
+        }
         const init: RequestInit & { dispatcher?: unknown } = {
           method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
+          headers,
           body: JSON.stringify(body),
           signal: controller.signal,
         };
+        // --- END LOCAL FORK ADDITION ---
         if (dispatcher) init.dispatcher = dispatcher;
         const response = await fetch(this.url, init);
         return response;
@@ -1850,3 +1922,16 @@ export class LocalLlmContentGenerator implements ContentGenerator {
     // --- END LOCAL FORK ADDITION ---
   }
 }
+
+// --- LOCAL FORK ADDITION (Phase 2.1) ---
+/**
+ * Hosted-provider–facing alias for {@link LocalLlmContentGenerator}.
+ *
+ * The class is unchanged; only the name reads more clearly at hosted-mode
+ * call sites (it implements the OpenAI Chat Completions wire format, which
+ * every supported provider except Anthropic speaks). A hard rename is a
+ * follow-up PR; aliasing keeps the diff small and rebase-safe.
+ */
+export const OpenAICompatContentGenerator = LocalLlmContentGenerator;
+export type OpenAICompatContentGenerator = LocalLlmContentGenerator;
+// --- END LOCAL FORK ADDITION ---

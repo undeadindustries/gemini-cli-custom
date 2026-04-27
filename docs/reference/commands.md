@@ -283,6 +283,60 @@ Slash commands provide meta-level control over the CLI itself.
       recovery, has documentation-injection risk).
     - **Usage:** `/local toolcall <strict|lenient|loose>`
 
+<!-- LOCAL FORK ADDITION (Phase 2.1) -->
+
+### `/provider`
+
+> Fork-only command (gemini-local-cli). Configures hosted LLM providers (OpenAI
+> in Phase 2.1; Qwen / Kimi / DeepSeek / Groq / OpenRouter / Together /
+> Fireworks / Mistral / xAI added in follow-ups). Reuses the same
+> OpenAI-compatible content generator that powers `/local`, with Bearer auth and
+> per-provider extra headers added on top.
+
+- **Description:** Open the dedicated dialog to inspect or edit the active
+  provider's model, base URL, context limit, prompt mode, and tool-enable flag.
+  With no sub-command, opens the dialog. Sub-commands cover every operation
+  headlessly so the command works in ACP / non-interactive mode.
+- **Security model:** API keys live in the OS keychain (one entry per provider,
+  named `gemini-cli-provider-<id>`) or in the provider's documented env var
+  (`OPENAI_API_KEY`, etc.). Keys are NEVER stored in `settings.json` and are
+  NEVER logged or surfaced via telemetry. Env var always wins over the keychain
+  entry.
+- **Sub-commands:**
+  - **`list`**:
+    - **Description:** Print every registered provider, its current model and
+      base URL (after merging registry defaults with user overrides), and
+      whether an API key is configured for it (env var or keychain). Marks the
+      active provider with `▸`. Works headlessly.
+    - **Usage:** `/provider list`
+  - **`use`**:
+    - **Description:** Switch the active hosted provider. Hot-reloads the
+      content generator so the change takes effect on the next turn — no restart
+      required. Errors are surfaced inline.
+    - **Usage:** `/provider use <id>` (e.g. `/provider use openai`)
+  - **`set`**:
+    - **Description:** Hot-reload one field on a provider. `model` and `baseUrl`
+      accept any non-empty string. `key` saves an API key to the OS keychain —
+      note the key briefly appears in your terminal scrollback when typed
+      inline; clear it with `Ctrl+L` afterwards.
+    - **Usage:**
+      - `/provider set <id> model <model-name>`
+      - `/provider set <id> baseUrl <https-url>`
+      - `/provider set <id> key <api-key>`
+  - **`remove`**:
+    - **Description:** Clear the per-provider settings overrides AND the
+      keychain entry for that provider. The provider remains in the registry;
+      only the user-supplied overrides are removed.
+    - **Usage:** `/provider remove <id>`
+
+To activate hosted-provider mode for a session set the env var
+`GEMINI_PROVIDER=<id>` (e.g. `GEMINI_PROVIDER=openai`) before launching the CLI,
+or run `/auth` and select the provider mode in the dialog. The provider mode and
+`/local` mode are independent — whichever auth type is current at request time
+wins.
+
+<!-- END LOCAL FORK ADDITION -->
+
 ### `/mcp`
 
 - **Description:** Manage configured Model Context Protocol (MCP) servers.

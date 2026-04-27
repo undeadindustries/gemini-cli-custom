@@ -27,6 +27,9 @@ import { PermissionsModifyTrustDialog } from './PermissionsModifyTrustDialog.js'
 import { ModelDialog } from './ModelDialog.js';
 import { VoiceModelDialog } from './VoiceModelDialog.js';
 import { LocalDialog } from './LocalDialog.js';
+// --- LOCAL FORK ADDITION (Phase 2.2) ---
+import { ProviderDialog } from './ProviderDialog.js';
+// --- END LOCAL FORK ADDITION ---
 import { theme } from '../semantic-colors.js';
 import { useUIState } from '../contexts/UIStateContext.js';
 import { useQuotaState } from '../contexts/QuotaContext.js';
@@ -246,7 +249,11 @@ export const DialogManager = ({
   }
   if (uiState.isLocalDialogOpen) {
     return <LocalDialog onClose={uiActions.closeLocalDialog} />;
+  // --- LOCAL FORK ADDITION (Phase 2.2) ---
+  if (uiState.isProviderDialogOpen) {
+    return <ProviderDialog onClose={uiActions.closeProviderDialog} />;
   }
+  // --- END LOCAL FORK ADDITION ---
   if (
     uiState.isAgentConfigDialogOpen &&
     uiState.selectedAgentName &&

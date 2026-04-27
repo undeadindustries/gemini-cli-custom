@@ -27,6 +27,17 @@ import {
 } from '../core/contentGenerator.js';
 import type { OverageStrategy } from '../billing/billing.js';
 import type { LocalModelInfo } from '../core/localModelDiscovery.js';
+// --- LOCAL FORK ADDITION (Phase 2.1) ---
+import {
+  resolveProvider,
+  effectiveRegistry,
+  validateCustomProviderId,
+  type ProviderInstanceConfig,
+  type ResolvedProvider,
+  type CustomProviderDefinition,
+  type ProviderDefinition,
+} from '../providers/providerRegistry.js';
+// --- END LOCAL FORK ADDITION ---
 import { discoverAndStoreLocalModels } from '../core/localModelBridge.js';
 import { PromptRegistry } from '../prompts/prompt-registry.js';
 import { ResourceRegistry } from '../resources/resource-registry.js';
@@ -807,6 +818,27 @@ export interface ConfigParameters {
   // --- LOCAL FORK ADDITION (Phase 2.0.13) ---
   localTemperature?: number;
   // --- END LOCAL FORK ADDITION ---
+  // --- LOCAL FORK ADDITION (Phase 2.0.14) ---
+  localTopP?: number;
+  localTopK?: number;
+  localMinP?: number;
+  localRepetitionPenalty?: number;
+  // --- END LOCAL FORK ADDITION ---
+  // --- LOCAL FORK ADDITION (Phase 2.1) ---
+  // Hosted-provider configuration. `providersActive` is the id of the
+  // currently selected provider (e.g. 'openai'); `providersConfig` is the
+  // user-supplied per-provider overrides keyed by id. Both are optional —
+  // when omitted, provider mode falls back to registry defaults.
+  // API keys are NEVER passed through here; they live only in the keychain
+  // (or the per-provider env var). See providerCredentialStorage.ts.
+  providersActive?: string;
+  providersConfig?: Record<string, ProviderInstanceConfig>;
+  // Phase 2.3: user-defined custom OpenAI-compat providers, keyed by id.
+  // Loaded from `settings.providers.custom.*`. Merged with the four
+  // built-ins by `effectiveRegistry()` at request time. Built-ins always
+  // win on id collision so a user cannot shadow `openai` or `gemini-*`.
+  providersCustom?: Record<string, CustomProviderDefinition>;
+  // --- END LOCAL FORK ADDITION ---
   localContextLimit?: number;
   localCompressionThreshold?: number;
   localPreserveFraction?: number;
@@ -933,6 +965,37 @@ export class Config implements McpContext, AgentLoopContext {
   // for coding/tool-use).  Configured via local.temperature in settings.json
   // or GEMINI_LOCAL_TEMPERATURE env var.
   private localTemperature: number | null;
+  // --- END LOCAL FORK ADDITION ---
+  // --- LOCAL FORK ADDITION (Phase 2.0.14) ---
+  // Additional sampler controls forwarded to the local LLM on every request.
+  // null means "let the server decide" (vLLM defaults). All four are mutable so
+  // refreshLocalConfig() can hot-swap them via /local topp|topk|minp|reppen.
+  // Required for GLM-4.7-Flash, whose looping behavior is suppressed by Z.ai's
+  // recommended sampler shape (top_p=1.0, min_p=0.01, repetition_penalty=1.0).
+  // See https://unsloth.ai/docs/models/glm-4.7-flash for details.
+  private localTopP: number | null;
+  private localTopK: number | null;
+  private localMinP: number | null;
+  private localRepetitionPenalty: number | null;
+  // --- END LOCAL FORK ADDITION ---
+  // --- LOCAL FORK ADDITION (Phase 2.1) ---
+  // Hosted-provider state. Mutable so refreshProviderConfig() can hot-swap
+  // active provider, model, baseUrl, etc. without restarting the CLI.
+  // `providersActive` selects which entry in `providersConfig` is live;
+  // after Phase 2.1.1 it also covers local presets (local-vllm, etc.) so
+  // there's no separate AuthType.PROVIDER — everything routes through
+  // AuthType.LOCAL via Config.getEffectiveProviderConfig() for OpenAI-compat
+  // wire formats; Gemini wire-format providers map to their respective
+  // upstream AuthType (LOGIN_WITH_GOOGLE / USE_GEMINI / USE_VERTEX_AI).
+  private providersActive: string | undefined;
+  private providersConfig: Record<string, ProviderInstanceConfig>;
+  // Phase 2.3: in-memory copy of `settings.providers.custom.*`.
+  // Mutators (`addCustomProvider` / `removeCustomProvider`) update this
+  // map AND request a settings.json write through the slash command /
+  // dialog (Config itself never writes user-scope settings; that's the
+  // settings layer's job). `getEffectiveProviderConfig()` and
+  // `getProviderRegistry()` consult this map on every call.
+  private providersCustom: Record<string, CustomProviderDefinition>;
   // --- END LOCAL FORK ADDITION ---
   private readonly localContextLimit: number | undefined;
   private readonly localCompressionThreshold: number | undefined;
@@ -1537,6 +1600,85 @@ export class Config implements McpContext, AgentLoopContext {
           : null;
     }
     // --- END LOCAL FORK ADDITION ---
+    // --- LOCAL FORK ADDITION (Phase 2.0.14) ---
+    // Each sampler value is independently optional. Out-of-range or unparseable
+    // values are silently coerced to null so the field is omitted from request
+    // bodies and the server falls back to its own default.
+    {
+      const rawTopP =
+        params.localTopP ??
+        (process.env['GEMINI_LOCAL_TOP_P']
+          ? parseFloat(process.env['GEMINI_LOCAL_TOP_P'])
+          : undefined);
+      this.localTopP =
+        rawTopP !== undefined &&
+        isFinite(rawTopP) &&
+        rawTopP > 0 &&
+        rawTopP <= 1
+          ? rawTopP
+          : null;
+
+      const rawTopK =
+        params.localTopK ??
+        (process.env['GEMINI_LOCAL_TOP_K']
+          ? parseInt(process.env['GEMINI_LOCAL_TOP_K'], 10)
+          : undefined);
+      // top_k accepts -1 (vLLM convention for "disabled") and any positive int.
+      this.localTopK =
+        rawTopK !== undefined &&
+        Number.isInteger(rawTopK) &&
+        (rawTopK === -1 || rawTopK >= 1)
+          ? rawTopK
+          : null;
+
+      const rawMinP =
+        params.localMinP ??
+        (process.env['GEMINI_LOCAL_MIN_P']
+          ? parseFloat(process.env['GEMINI_LOCAL_MIN_P'])
+          : undefined);
+      this.localMinP =
+        rawMinP !== undefined &&
+        isFinite(rawMinP) &&
+        rawMinP >= 0 &&
+        rawMinP <= 1
+          ? rawMinP
+          : null;
+
+      const rawRepPen =
+        params.localRepetitionPenalty ??
+        (process.env['GEMINI_LOCAL_REPETITION_PENALTY']
+          ? parseFloat(process.env['GEMINI_LOCAL_REPETITION_PENALTY'])
+          : undefined);
+      // 1.0 = disabled. vLLM accepts (0, 2]; values <= 0 break sampling.
+      this.localRepetitionPenalty =
+        rawRepPen !== undefined &&
+        isFinite(rawRepPen) &&
+        rawRepPen > 0 &&
+        rawRepPen <= 2
+          ? rawRepPen
+          : null;
+    }
+    // --- END LOCAL FORK ADDITION ---
+    // --- LOCAL FORK ADDITION (Phase 2.1) ---
+    // Hosted-provider state. The GEMINI_PROVIDER env var overrides the
+    // settings.json `providers.active` field so an end user can flip the
+    // active provider per-shell without editing files. providersConfig is
+    // taken as-is; per-instance shape validation runs at read time
+    // (`getActiveProviderResolved`) so a bad override surfaces with a
+    // clear error rather than crashing the constructor.
+    this.providersActive =
+      process.env['GEMINI_PROVIDER']?.trim() ||
+      params.providersActive ||
+      undefined;
+    this.providersConfig = params.providersConfig ?? {};
+    // Phase 2.3: custom providers are taken as-is. Per-entry shape
+    // validation runs at read time inside customToProviderDefinition()
+    // and at write time inside addCustomProvider(); the constructor
+    // does not throw on a malformed entry — a bad entry simply fails
+    // when the user tries to switch to it, which is consistent with
+    // the rest of the provider plumbing.
+    this.providersCustom = { ...(params.providersCustom ?? {}) };
+    // --- END LOCAL FORK ADDITION ---
     this.localContextLimit = params.localContextLimit;
     this.localCompressionThreshold = params.localCompressionThreshold;
     this.localPreserveFraction = params.localPreserveFraction;
@@ -1776,7 +1918,25 @@ export class Config implements McpContext, AgentLoopContext {
     baseUrl?: string,
     customHeaders?: Record<string, string>,
   ) {
-    // Local LLM bypass: skip full auth chain when routing to a local endpoint
+    // --- LOCAL FORK ADDITION (Phase 2.2: provider-driven auth dispatch) ---
+    // When a provider is active and its registry-declared authType
+    // disagrees with the incoming authMethod, the registry wins. This is
+    // the path that lets `/provider use gemini-oauth` redispatch a
+    // refreshAuth(LOCAL) call into refreshAuth(LOGIN_WITH_GOOGLE) without
+    // every caller having to know about wireFormat.
+    if (this.providersActive) {
+      const eff = this.getEffectiveProviderConfig();
+      if (eff && eff.authType !== authMethod) {
+        authMethod = eff.authType;
+      }
+    }
+    // --- END LOCAL FORK ADDITION ---
+
+    // OpenAI-compat bypass: skip the full upstream auth chain when
+    // routing to a local endpoint OR a hosted OpenAI-compat provider.
+    // Both flow through the same generator; the difference is just
+    // whether requiresApiKey adds a Bearer header. isLocalMode() is
+    // wireFormat-aware so Gemini providers fall through to upstream.
     if (this.isLocalMode() || authMethod === AuthType.LOCAL) {
       const localConfig: ContentGeneratorConfig = {
         authType: AuthType.LOCAL,
@@ -1788,6 +1948,17 @@ export class Config implements McpContext, AgentLoopContext {
       );
       this.contentGeneratorConfig = localConfig;
       this.baseLlmClient = new BaseLlmClient(this.contentGenerator, this);
+      // --- LOCAL FORK ADDITION (Phase 2.1.1) ---
+      // Provider-mode: surface the resolved model id (e.g. gpt-4o) into
+      // config.model so the footer + /model dialog show the right value.
+      // Skip the 'local-model' placeholder used by local presets that have
+      // no user-supplied model — that placeholder isn't meaningful in the
+      // footer and the existing model-discovery path will populate it.
+      const eff = this.getEffectiveProviderConfig();
+      if (eff && eff.model && eff.model !== 'local-model') {
+        this.setModel(eff.model, true);
+      }
+      // --- END LOCAL FORK ADDITION ---
       await discoverAndStoreLocalModels(this);
       return;
     }
@@ -3164,28 +3335,203 @@ export class Config implements McpContext, AgentLoopContext {
     return this.proxy;
   }
 
+  // --- LOCAL FORK ADDITION (Phase 2.2: unified provider resolver) ---
+  /**
+   * Resolves the active provider entry into a single concrete shape that
+   * downstream code can consume without caring whether the user picked
+   * `local-vllm`, `openai`, `gemini-oauth`, or any other registry id.
+   *
+   * Inputs:
+   *   - `providers.active`           — the active provider id.
+   *   - `providers.<id>.*`           — per-instance overrides (merged on
+   *                                    top of registry defaults).
+   *   - `local.*`                    — legacy fields, only consulted as a
+   *                                    one-shot safety net when migration
+   *                                    has not yet been run on disk (the
+   *                                    PR ships migration alongside this
+   *                                    rename, so this fallback effectively
+   *                                    fires only on the very first launch
+   *                                    after upgrading).
+   *
+   * Output fields:
+   *   - `wireFormat` — `'openai-chat'` (we own the wire, dispatch through
+   *                    OpenAICompatContentGenerator) or `'gemini'`
+   *                    (dispatch through upstream googleGenAI).
+   *   - `authType`   — the AuthType this entry maps to. `refreshAuth()`
+   *                    and `/provider use` consult this directly so
+   *                    `/provider use gemini-oauth` triggers the same
+   *                    flow as `/auth → LOGIN_WITH_GOOGLE`.
+   *   - `displayName` / `providerId` — for UI display.
+   *   - `requiresApiKey` / `apiKeyEnvVar` — drive the credential resolver
+   *                    and the dialog's API-key row visibility.
+   *   - `url` / `model` / `contextLimit` / `promptMode` / `parserMode`
+   *     / `timeout` / `enableTools` — used by OpenAI-compat callers.
+   *     For `wireFormat: 'gemini'`, only `model` and `contextLimit` are
+   *     meaningful; the rest carry sane defaults that are simply unused
+   *     by the upstream Gemini SDK path.
+   *
+   * The apiKey is intentionally NOT resolved here (it's async, and
+   * reading the keychain on every getLocalModel() call would be a perf
+   * disaster). `createContentGenerator` resolves it once per
+   * generator-build via `resolveProviderApiKey()` and threads it in.
+   *
+   * Returns `undefined` when no provider is configured AND no legacy
+   * `local.url` is set — i.e. the user has not configured any backend
+   * and should be sent to the auth dialog.
+   */
+  getEffectiveProviderConfig():
+    | {
+        url: string;
+        model: string;
+        contextLimit: number;
+        promptMode: string;
+        parserMode: 'strict' | 'lenient' | 'loose';
+        timeout: number;
+        enableTools: boolean;
+        displayName: string;
+        providerId: string;
+        requiresApiKey: boolean;
+        apiKeyEnvVar: string;
+        wireFormat: 'openai-chat' | 'gemini' | 'anthropic-messages';
+        authType: AuthType;
+      }
+    | undefined {
+    if (this.providersActive) {
+      try {
+        const r = resolveProvider(
+          this.providersActive,
+          this.providersConfig[this.providersActive],
+          this.providersCustom,
+        );
+        return {
+          url: r.baseUrl,
+          // Local presets ship with defaultModel='' so the server can pick;
+          // surface 'local-model' as the historical placeholder so generator
+          // request bodies always have a non-empty `model` field.
+          model: r.model || 'local-model',
+          contextLimit: r.contextLimit,
+          promptMode: r.promptMode,
+          parserMode: this.localToolCallParseMode,
+          timeout: r.timeout,
+          enableTools: r.enableTools,
+          displayName: r.definition.displayName,
+          providerId: r.definition.id,
+          requiresApiKey: r.definition.requiresApiKey,
+          apiKeyEnvVar: r.definition.apiKeyEnvVar,
+          wireFormat: r.definition.wireFormat,
+          authType: r.definition.authType,
+        };
+      } catch {
+        // resolveProvider throws on malformed config or unknown id;
+        // swallow and fall through to the legacy-local safety net so the
+        // user isn't locked out of their existing setup mid-upgrade.
+        // createContentGenerator surfaces the actionable error separately
+        // when it tries to build a request against a malformed provider.
+      }
+    }
+    // One-shot legacy-local safety net: only fires before the on-disk
+    // migration writes `providers.active = 'local-vllm'`. Post-migration
+    // this branch is dead code; it stays for the duration of one upgrade
+    // cycle so a user who launches once and panics doesn't hit "no LLM
+    // configured" if migration write fails for any reason.
+    if (this.localUrl) {
+      return {
+        url: this.localUrl,
+        model: this.localModelOverride ?? this.localModel ?? 'local-model',
+        contextLimit: this.getLegacyLocalContextLimit(),
+        promptMode: this.localPromptMode,
+        parserMode: this.localToolCallParseMode,
+        timeout: this.localTimeout,
+        enableTools: this.localEnableTools,
+        displayName: 'Local vLLM',
+        // Treat the legacy fallback as if `local-vllm` was selected so
+        // the rest of the stack (UI, dispatcher, credential resolver)
+        // sees a uniform shape.
+        providerId: 'local-vllm',
+        requiresApiKey: false,
+        apiKeyEnvVar: '',
+        wireFormat: 'openai-chat',
+        authType: AuthType.LOCAL,
+      };
+    }
+    return undefined;
+  }
+
+  /**
+   * Pre-Phase 2.2 logic for `getLocalContextLimit()`, kept on its own so
+   * `getEffectiveProviderConfig()` can call it for the legacy-local
+   * fallback without recursing through `getLocalContextLimit()`.
+   */
+  private getLegacyLocalContextLimit(): number {
+    if (this.localContextLimit !== undefined) {
+      return this.localContextLimit;
+    }
+    const activeModel =
+      this.localModelOverride ?? this.localModel ?? 'local-model';
+    const discovered = this.discoveredLocalModels.find(
+      (m) => m.localId === activeModel || m.id === activeModel,
+    );
+    if (discovered?.maxModelLen) {
+      return discovered.maxModelLen;
+    }
+    return 32768;
+  }
+  // --- END LOCAL FORK ADDITION ---
+
   getLocalUrl(): string | undefined {
-    return this.localUrl;
+    // Provider-mode URL wins when configured. Falls back to the raw
+    // localUrl field for legacy users who haven't migrated to /provider.
+    return this.getEffectiveProviderConfig()?.url ?? this.localUrl;
   }
 
   getLocalModel(): string {
-    return this.localModelOverride ?? this.localModel ?? 'local-model';
+    // Same delegation pattern as getLocalUrl(). The historical fallback
+    // chain (localModelOverride → localModel → 'local-model') is preserved
+    // inside getEffectiveProviderConfig() for the legacy-local fallback.
+    return (
+      this.getEffectiveProviderConfig()?.model ??
+      this.localModelOverride ??
+      this.localModel ??
+      'local-model'
+    );
   }
 
   getLocalTimeout(): number {
     return this.localTimeout;
   }
 
+  /**
+   * True when the runtime should route requests through our OpenAI-compat
+   * generator — i.e. the active provider declares `wireFormat:
+   * 'openai-chat'` (local-vllm, openai, ...) OR a legacy `local.url` is
+   * still set on disk.
+   *
+   * Returns false for `wireFormat: 'gemini'` entries even though they
+   * also flow through `providers.active` — the upstream Google GenAI
+   * SDK owns those wires, not us.
+   */
   isLocalMode(): boolean {
+    if (this.providersActive) {
+      const eff = this.getEffectiveProviderConfig();
+      // Unknown / malformed provider id → fall back to "true" so the
+      // legacy-local synthetic shape inside getEffectiveProviderConfig()
+      // takes over and a misconfigured user isn't locked out.
+      if (!eff) return !!this.localUrl;
+      return eff.wireFormat === 'openai-chat';
+    }
     return !!this.localUrl;
   }
 
   isLocalToolsEnabled(): boolean {
-    return this.localEnableTools;
+    return (
+      this.getEffectiveProviderConfig()?.enableTools ?? this.localEnableTools
+    );
   }
 
   getLocalPromptMode(): string {
-    return this.localPromptMode;
+    return (
+      this.getEffectiveProviderConfig()?.promptMode ?? this.localPromptMode
+    );
   }
 
   // --- LOCAL FORK ADDITION (Phase 2.0.12) ---
@@ -3212,18 +3558,56 @@ export class Config implements McpContext, AgentLoopContext {
   }
   // --- END LOCAL FORK ADDITION ---
 
+  // --- LOCAL FORK ADDITION (Phase 2.0.14) ---
+  /**
+   * Nucleus sampling cutoff. Returns null when unset (server uses its default).
+   * Configured via `local.topP` in settings.json or GEMINI_LOCAL_TOP_P env var.
+   * Valid range: (0, 1]. Z.ai recommends 1.0 for GLM-4.7-Flash tool-calling.
+   */
+  getLocalTopP(): number | null {
+    return this.localTopP;
+  }
+
+  /**
+   * Top-k sampling cutoff. Returns null when unset (server uses its default).
+   * Configured via `local.topK` in settings.json or GEMINI_LOCAL_TOP_K env var.
+   * vLLM accepts -1 to disable, or any positive integer.
+   */
+  getLocalTopK(): number | null {
+    return this.localTopK;
+  }
+
+  /**
+   * Min-p sampling floor. Returns null when unset (server uses its default).
+   * Configured via `local.minP` in settings.json or GEMINI_LOCAL_MIN_P env var.
+   * Valid range: [0, 1]. Z.ai recommends 0.01 for GLM-4.7-Flash.
+   */
+  getLocalMinP(): number | null {
+    return this.localMinP;
+  }
+
+  /**
+   * Repetition penalty multiplier. Returns null when unset (server default).
+   * Configured via `local.repetitionPenalty` or GEMINI_LOCAL_REPETITION_PENALTY.
+   * Valid range: (0, 2]. 1.0 disables. Z.ai recommends 1.0 for GLM-4.7-Flash.
+   */
+  getLocalRepetitionPenalty(): number | null {
+    return this.localRepetitionPenalty;
+  }
+  // --- END LOCAL FORK ADDITION ---
+
   getLocalContextLimit(): number {
-    if (this.localContextLimit !== undefined) {
-      return this.localContextLimit;
+    // --- LOCAL FORK ADDITION (Phase 2.2) ---
+    // When a provider is explicitly active, its registry/override
+    // contextLimit wins. The legacy `local.contextLimit` + maxModelLen
+    // discovery fallback only applies on the one-shot legacy-local path
+    // (no providers.active), where we don't have a registry default.
+    if (this.providersActive) {
+      const eff = this.getEffectiveProviderConfig();
+      if (eff) return eff.contextLimit;
     }
-    const activeModel = this.getLocalModel();
-    const discovered = this.discoveredLocalModels.find(
-      (m) => m.localId === activeModel || m.id === activeModel,
-    );
-    if (discovered?.maxModelLen) {
-      return discovered.maxModelLen;
-    }
-    return 32768;
+    // --- END LOCAL FORK ADDITION ---
+    return this.getLegacyLocalContextLimit();
   }
 
   getDiscoveredLocalModels(): LocalModelInfo[] {
@@ -3269,6 +3653,12 @@ export class Config implements McpContext, AgentLoopContext {
     // --- LOCAL FORK ADDITION (Phase 2.0.13) ---
     temperature?: number | null;
     // --- END LOCAL FORK ADDITION ---
+    // --- LOCAL FORK ADDITION (Phase 2.0.14) ---
+    topP?: number | null;
+    topK?: number | null;
+    minP?: number | null;
+    repetitionPenalty?: number | null;
+    // --- END LOCAL FORK ADDITION ---
   }): Promise<void> {
     if (updates.url !== undefined) this.localUrl = updates.url;
     if (updates.model !== undefined) this.localModel = updates.model;
@@ -3299,6 +3689,15 @@ export class Config implements McpContext, AgentLoopContext {
     if (updates.temperature !== undefined)
       this.localTemperature = updates.temperature;
     // --- END LOCAL FORK ADDITION ---
+    // --- LOCAL FORK ADDITION (Phase 2.0.14) ---
+    // Same hot-reload semantics as temperature: no ContentGenerator rebuild,
+    // request bodies read these on every call. null clears to server default.
+    if (updates.topP !== undefined) this.localTopP = updates.topP;
+    if (updates.topK !== undefined) this.localTopK = updates.topK;
+    if (updates.minP !== undefined) this.localMinP = updates.minP;
+    if (updates.repetitionPenalty !== undefined)
+      this.localRepetitionPenalty = updates.repetitionPenalty;
+    // --- END LOCAL FORK ADDITION ---
     if (
       this.isLocalMode() &&
       (updates.url !== undefined ||
@@ -3307,6 +3706,231 @@ export class Config implements McpContext, AgentLoopContext {
     ) {
       await this.refreshAuth(AuthType.LOCAL);
     }
+  }
+  // --- END LOCAL FORK ADDITION ---
+
+  // --- LOCAL FORK ADDITION (Phase 2.1) ---
+  /**
+   * Returns the id of the currently active hosted provider, or undefined
+   * if none is configured. The id is what `providers.active` resolves to
+   * (env var GEMINI_PROVIDER wins over settings.json).
+   */
+  getActiveProviderId(): string | undefined {
+    return this.providersActive;
+  }
+
+  /**
+   * Returns the user-supplied per-instance overrides for `providerId`,
+   * or undefined if no overrides exist. Returns the live object — do not
+   * mutate it from outside `refreshProviderConfig`.
+   */
+  getProviderConfig(providerId: string): ProviderInstanceConfig | undefined {
+    return this.providersConfig[providerId];
+  }
+
+  /**
+   * Returns ALL configured per-provider overrides. Used by `/provider list`
+   * to mark which providers have user-customized settings beyond the
+   * registry default.
+   */
+  getAllProviderConfigs(): Readonly<Record<string, ProviderInstanceConfig>> {
+    return this.providersConfig;
+  }
+
+  /**
+   * Resolves the active provider into a `ResolvedProvider` (registry
+   * default merged with the user override). Throws
+   * `UnknownProviderError` if `providers.active` references an id not in
+   * the registry, or `InvalidProviderConfigError` if the override is
+   * malformed. Returns undefined when no active provider is configured.
+   */
+  getActiveProviderResolved(): ResolvedProvider | undefined {
+    if (!this.providersActive) return undefined;
+    return resolveProvider(
+      this.providersActive,
+      this.providersConfig[this.providersActive],
+      this.providersCustom,
+    );
+  }
+
+  // --- LOCAL FORK ADDITION (Phase 2.3) ---
+  /**
+   * Returns the merged effective registry — frozen built-ins plus the
+   * user's custom providers from settings — keyed by id. This is the
+   * single source of truth for "what providers are visible right now"
+   * across `/provider list`, the `ProviderDialog` menu, and the
+   * `useAuth` hook. Pure: returns a fresh object on every call.
+   */
+  getProviderRegistry(): Record<string, ProviderDefinition> {
+    return effectiveRegistry(this.providersCustom);
+  }
+
+  /**
+   * Returns the user's custom provider entries (as stored in
+   * `settings.providers.custom.*`), keyed by id. Returns the live object
+   * — do not mutate it from outside `addCustomProvider` /
+   * `removeCustomProvider`.
+   */
+  getCustomProviders(): Readonly<Record<string, CustomProviderDefinition>> {
+    return this.providersCustom;
+  }
+
+  /**
+   * Adds a new user-defined OpenAI-compat provider. Throws if the id is
+   * malformed, collides with a built-in, or is already defined as a
+   * custom entry. Persists to `this.providersCustom` only — the caller
+   * (slash command or dialog) is responsible for writing the settings
+   * file. Does NOT switch to the new provider; call
+   * `refreshProviderConfig({ active: id })` separately if desired.
+   */
+  addCustomProvider(id: string, def: CustomProviderDefinition): void {
+    const idError = validateCustomProviderId(id);
+    if (idError) {
+      throw new Error(idError);
+    }
+    if (id in this.providersCustom) {
+      throw new Error(
+        `Custom provider '${id}' already exists. Use /provider remove ${id} first, or pick a different id.`,
+      );
+    }
+    if (!def.baseUrl || typeof def.baseUrl !== 'string') {
+      throw new Error('baseUrl is required and must be a string.');
+    }
+    try {
+      const u = new URL(def.baseUrl);
+      if (u.protocol !== 'http:' && u.protocol !== 'https:') {
+        throw new Error('baseUrl must use http:// or https://');
+      }
+    } catch {
+      throw new Error(`baseUrl '${def.baseUrl}' is not a valid URL.`);
+    }
+    if (
+      def.apiKeyEnvVar !== undefined &&
+      def.apiKeyEnvVar !== '' &&
+      !/^[A-Z][A-Z0-9_]*$/.test(def.apiKeyEnvVar)
+    ) {
+      throw new Error(
+        `apiKeyEnvVar '${def.apiKeyEnvVar}' must be uppercase letters, digits, and underscores (e.g. 'GROQ_API_KEY').`,
+      );
+    }
+    this.providersCustom = { ...this.providersCustom, [id]: { ...def } };
+  }
+
+  /**
+   * Removes a user-defined custom provider. Throws if the id refers to a
+   * built-in (those cannot be removed) or to an unknown id. Persists to
+   * `this.providersCustom` only. The caller is responsible for writing
+   * the settings file and (optionally) clearing the keychain entry.
+   *
+   * If the removed id is the currently active provider, the active id
+   * is cleared so the next `refreshProviderConfig` falls back to a safe
+   * default (`gemini-oauth`).
+   */
+  removeCustomProvider(id: string): void {
+    if (id in this.providersCustom === false) {
+      throw new Error(
+        `'${id}' is not a custom provider. Built-in providers cannot be removed; see /provider list for the available set.`,
+      );
+    }
+    const next = { ...this.providersCustom };
+    delete next[id];
+    this.providersCustom = next;
+    // Drop any stale per-instance overrides for the removed entry so
+    // re-adding the same id later doesn't pick up zombie config.
+    if (this.providersConfig[id]) {
+      const nextCfg = { ...this.providersConfig };
+      delete nextCfg[id];
+      this.providersConfig = nextCfg;
+    }
+    if (this.providersActive === id) {
+      this.providersActive = undefined;
+    }
+  }
+  // --- END LOCAL FORK ADDITION ---
+
+  /**
+   * True when the current auth path should use a hosted provider — i.e.
+   * `providers.active` is set AND we're not currently in local mode.
+   * Note: this does NOT check the live AuthType; callers that need to
+   * distinguish "configured" from "currently routing through" should
+   * inspect both this and `getContentGeneratorConfig().authType`.
+   */
+  isProviderMode(): boolean {
+    return !!this.providersActive && !this.isLocalMode();
+  }
+
+  /**
+   * Hot-reloads the hosted-provider configuration without requiring a
+   * CLI restart. Mirrors {@link refreshLocalConfig}: pass only the
+   * fields you want to change; undefined fields are left alone.
+   *
+   * Behavior:
+   * - `active` switches the live provider id. When provided AND auth
+   *   mode is currently PROVIDER, triggers `refreshAuth(PROVIDER)` to
+   *   rebuild the ContentGenerator against the new provider.
+   * - `setConfig` shallow-merges per-provider overrides onto the
+   *   existing entry. To clear an override pass an explicit `undefined`
+   *   for the field on a fresh object.
+   * - `removeProvider` deletes both the per-instance config and (best
+   *   effort) the keychain entry. The keychain side is fire-and-forget
+   *   so a missing entry does not block the settings update.
+   *
+   * Throws on refresh failure (e.g. unknown provider id, missing key);
+   * callers must catch and surface the error to the user. Field updates
+   * are preserved on failure so the user can correct them in /provider.
+   */
+  async refreshProviderConfig(updates: {
+    active?: string | null;
+    setConfig?: { id: string; patch: ProviderInstanceConfig };
+    removeProvider?: string;
+  }): Promise<void> {
+    let activeChanged = false;
+    if (updates.active !== undefined) {
+      const next = updates.active === null ? undefined : updates.active.trim();
+      if (next !== this.providersActive) {
+        this.providersActive = next || undefined;
+        activeChanged = true;
+      }
+    }
+    if (updates.setConfig) {
+      const id = updates.setConfig.id;
+      const existing = this.providersConfig[id] ?? {};
+      this.providersConfig[id] = { ...existing, ...updates.setConfig.patch };
+    }
+    if (updates.removeProvider) {
+      delete this.providersConfig[updates.removeProvider];
+      // The keychain side is best-effort. Imported lazily to keep the
+      // Config module free of credential-storage init at construction.
+      try {
+        const mod = await import('../providers/providerCredentialStorage.js');
+        await mod.clearProviderApiKey(updates.removeProvider);
+      } catch {
+        // Already warn-logged inside clearProviderApiKey.
+      }
+      if (this.providersActive === updates.removeProvider) {
+        this.providersActive = undefined;
+        activeChanged = true;
+      }
+    }
+    // --- LOCAL FORK ADDITION (Phase 2.2: rebuild on any provider change) ---
+    // Trigger a generator rebuild whenever something user-visible
+    // changed. Phase 2.2 unified the auth path: refreshAuth() consults
+    // the active provider's registry-declared authType and dispatches to
+    // the right backend (LOCAL for openai-chat, LOGIN_WITH_GOOGLE /
+    // USE_GEMINI / USE_VERTEX_AI for gemini-*), so we no longer need the
+    // pre-2.2 `authType === LOCAL` guard. Passing AuthType.LOCAL is just
+    // a default — refreshAuth() will redispatch when needed.
+    //
+    // We still skip the rebuild when an unrelated provider's setConfig
+    // is being saved (e.g. user is editing the openai entry but
+    // gemini-oauth is active) — that change doesn't affect the live
+    // wire and avoids gratuitous re-auths.
+    const setConfigAffectsActive =
+      !!updates.setConfig && updates.setConfig.id === this.providersActive;
+    if (activeChanged || setConfigAffectsActive) {
+      await this.refreshAuth(AuthType.LOCAL);
+    }
+    // --- END LOCAL FORK ADDITION ---
   }
   // --- END LOCAL FORK ADDITION ---
 

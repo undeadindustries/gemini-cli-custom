@@ -57,15 +57,15 @@ export interface ContentGenerator {
   paidTier?: GeminiUserTier;
 }
 
-export enum AuthType {
-  LOGIN_WITH_GOOGLE = 'oauth-personal',
-  USE_GEMINI = 'gemini-api-key',
-  USE_VERTEX_AI = 'vertex-ai',
-  LEGACY_CLOUD_SHELL = 'cloud-shell',
-  COMPUTE_ADC = 'compute-default-credentials',
-  GATEWAY = 'gateway',
-  LOCAL = 'local',
-}
+// --- LOCAL FORK ADDITION (Phase 2.2) ---
+// AuthType moved to a leaf module (`./authType.ts`) to break a runtime
+// circular-init cycle between providerRegistry.ts → contentGenerator.ts
+// → ../../index.js → config.ts → providerRegistry.ts. Re-exported here
+// so existing `import { AuthType } from './contentGenerator.js'` paths
+// keep compiling unchanged.
+// --- END LOCAL FORK ADDITION ---
+export { AuthType } from './authType.js';
+import { AuthType } from './authType.js';
 
 /**
  * Detects the best authentication type based on environment variables.
@@ -76,9 +76,17 @@ export enum AuthType {
  * 3. GEMINI_API_KEY -> USE_GEMINI
  */
 export function getAuthTypeFromEnv(): AuthType | undefined {
-  if (process.env['GEMINI_LOCAL_URL']) {
+  // --- LOCAL FORK ADDITION (Phase 2.1.1) ---
+  // GEMINI_PROVIDER and GEMINI_LOCAL_URL both map to AuthType.LOCAL since
+  // they share the OpenAI-compat wire format. The per-provider config
+  // (URL, key, model) lives in Config, not the enum.
+  if (
+    process.env['GEMINI_PROVIDER']?.trim() ||
+    process.env['GEMINI_LOCAL_URL']
+  ) {
     return AuthType.LOCAL;
   }
+  // --- END LOCAL FORK ADDITION ---
   if (process.env['GOOGLE_GENAI_USE_GCA'] === 'true') {
     return AuthType.LOGIN_WITH_GOOGLE;
   }
@@ -205,18 +213,87 @@ export async function createContentGenerator(
       return new LoggingContentGenerator(fakeGenerator, gcConfig);
     }
 
-    const localUrl =
-      process.env['GEMINI_LOCAL_URL'] || gcConfig.getLocalUrl?.();
-    if (localUrl) {
-      const localModel =
-        process.env['GEMINI_LOCAL_MODEL'] ||
-        gcConfig.getLocalModel?.() ||
-        'local-model';
+    // --- LOCAL FORK ADDITION (Phase 2.2: unified provider dispatcher) ---
+    // ONE branch covers every backend that speaks the OpenAI Chat
+    // Completions wire format — local presets (vLLM, llama.cpp), generic
+    // OpenAI-compat servers, and hosted providers (OpenAI, ...). The
+    // dispatch decision lives in Config.getEffectiveProviderConfig(),
+    // which carries `wireFormat` + `authType` from the registry.
+    //
+    // For `wireFormat === 'gemini'` we fall through to the existing
+    // upstream Gemini code path below — `config.authType` was already
+    // set by refreshAuth() to the correct LOGIN_WITH_GOOGLE / USE_GEMINI
+    // / USE_VERTEX_AI value, so the upstream branches just work without
+    // any fork-side fences.
+    //
+    // Env-var overrides (GEMINI_LOCAL_URL / GEMINI_LOCAL_MODEL) keep
+    // working so existing CI / scripts that point at a local server
+    // without touching settings.json still resolve into this branch.
+    const effective = gcConfig.getEffectiveProviderConfig?.();
+    const envUrl = process.env['GEMINI_LOCAL_URL'];
+    const envModel = process.env['GEMINI_LOCAL_MODEL'];
+    const isOpenAiCompat =
+      (effective && effective.wireFormat === 'openai-chat') || !!envUrl;
+    if (isOpenAiCompat) {
+      const url = envUrl || effective?.url || '';
+      const model = envModel || effective?.model || 'local-model';
+
+      // Hosted providers (requiresApiKey: true) resolve a Bearer token
+      // from env or keychain. Local presets skip the resolver entirely so
+      // localhost traffic never carries an Authorization header.
+      let apiKey: string | undefined;
+      let extraHeaders: Record<string, string> | undefined;
+      if (effective?.requiresApiKey) {
+        const providerId = effective.providerId;
+        const { resolveProviderApiKey } = await import(
+          '../providers/providerCredentialStorage.js'
+        );
+        let resolved;
+        try {
+          resolved = gcConfig.getActiveProviderResolved?.();
+        } catch (err: unknown) {
+          const reason = err instanceof Error ? err.message : String(err);
+          throw new Error(`Hosted provider configuration error: ${reason}`);
+        }
+        if (!resolved) {
+          throw new Error(
+            `Hosted provider '${providerId}' could not be resolved. ` +
+              `Run /provider list to see configured providers.`,
+          );
+        }
+        const key = await resolveProviderApiKey(providerId);
+        if (!key) {
+          throw new Error(
+            `No API key configured for provider '${providerId}'. ` +
+              `Set the ${resolved.definition.apiKeyEnvVar} env var, ` +
+              `or run /provider set ${providerId} key.`,
+          );
+        }
+        apiKey = key;
+        const headers = {
+          ...resolved.definition.buildAuthHeaders(key),
+          ...(resolved.definition.buildExtraHeaders?.() ?? {}),
+        };
+        // The Authorization header is set inside fetchWithTimeout from
+        // `apiKey`; pass extra headers (e.g. OpenRouter's HTTP-Referer)
+        // through so they ride every request.
+        delete headers['Authorization'];
+        extraHeaders = Object.keys(headers).length ? headers : undefined;
+      }
+
       return new LoggingContentGenerator(
-        new LocalLlmContentGenerator(localUrl, localModel, gcConfig),
+        new LocalLlmContentGenerator(
+          url,
+          model,
+          gcConfig,
+          apiKey || extraHeaders ? { apiKey, extraHeaders } : undefined,
+        ),
         gcConfig,
       );
     }
+    // For wireFormat === 'gemini' (or no provider configured), fall
+    // through to the existing upstream Gemini code path.
+    // --- END LOCAL FORK ADDITION ---
 
     const version = await getVersion();
     const model = resolveModel(

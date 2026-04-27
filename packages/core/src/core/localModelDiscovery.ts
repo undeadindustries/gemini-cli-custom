@@ -68,7 +68,7 @@ function deriveDisplayName(rawId: string): string {
  * "/v1/chat/completions/v1/models".  We strip any trailing OpenAI API path
  * suffixes so the result is always the bare server root.
  */
-function extractServerRoot(rawUrl: string): string {
+export function extractServerRoot(rawUrl: string): string {
   // Strip known OpenAI API path suffixes, then any trailing slashes.
   return rawUrl
     .replace(/\/v1\/chat\/completions\/?$/, '')

@@ -55,6 +55,24 @@ export {
 } from './core/localModelBridge.js';
 export type { LocalModelBridgeConfig } from './core/localModelBridge.js';
 
+// --- LOCAL FORK ADDITION (Phase 2.1) ---
+// Hosted-provider registry + credential storage. Pure new files; export
+// the public surface so the CLI command, dialog, and tests can import
+// from `@google/gemini-cli-core` without reaching into deep paths.
+export * from './providers/providerRegistry.js';
+export {
+  loadProviderApiKey,
+  saveProviderApiKey,
+  clearProviderApiKey,
+  resolveProviderApiKey,
+  resetProviderApiKeyCacheForTesting,
+} from './providers/providerCredentialStorage.js';
+export {
+  fetchProviderModels,
+  type ProviderModelInfo,
+} from './providers/providerModelDiscovery.js';
+// --- END LOCAL FORK ADDITION ---
+
 // Export Routing
 export * from './routing/routingStrategy.js';
 export * from './routing/modelRouterService.js';

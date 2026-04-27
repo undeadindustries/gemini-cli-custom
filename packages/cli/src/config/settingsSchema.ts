@@ -22,6 +22,9 @@ import {
   type CustomTheme,
   type SandboxConfig,
   type VertexAiRoutingConfig,
+  // --- LOCAL FORK ADDITION (Phase 2.3) ---
+  type CustomProviderDefinition,
+  // --- END LOCAL FORK ADDITION ---
 } from '@google/gemini-cli-core';
 import type { SessionRetentionSettings } from './settings.js';
 import { DEFAULT_MIN_RETENTION } from '../utils/sessionCleanup.js';
@@ -2053,15 +2056,27 @@ const SETTINGS_SCHEMA = {
     },
   },
 
+  // --- LOCAL FORK ADDITION (Phase 2.2) ---
+  // The `local.*` block is deprecated. New installs should configure
+  // OpenAI-compat backends through `providers.local-vllm.*` / similar.
+  // Existing `local.*` settings are auto-migrated on first launch (see
+  // migrateLegacyLocalSettings.ts); this schema entry is preserved so:
+  //   - The Settings type still types the legacy-local read paths in
+  //     Config (used by the safety-net fallback inside
+  //     getEffectiveProviderConfig).
+  //   - Migration can read the original blob without `as any`.
+  // showInDialog is false everywhere so it never appears in the
+  // /settings UI; it is functionally hard-removed from the user surface.
+  // --- END LOCAL FORK ADDITION ---
   local: {
     type: 'object',
-    label: 'Local LLM',
+    label: 'Local LLM (deprecated; auto-migrated to providers.local-vllm)',
     category: 'Advanced',
     requiresRestart: false,
     default: {},
     description:
-      'Configuration for routing requests to a local OpenAI-compatible LLM endpoint (e.g. vLLM, Ollama).',
-    showInDialog: true,
+      'Deprecated as of Phase 2.2. Configure backends through `providers.*` instead. Existing values are auto-migrated on first launch.',
+    showInDialog: false,
     properties: {
       url: {
         type: 'string',
@@ -2071,7 +2086,7 @@ const SETTINGS_SCHEMA = {
         default: '',
         description:
           'OpenAI-compatible chat completions endpoint URL (e.g. http://127.0.0.1:8000/v1/chat/completions). Overridden by GEMINI_LOCAL_URL env var.',
-        showInDialog: true,
+        showInDialog: false,
       },
       model: {
         type: 'string',
@@ -2081,7 +2096,7 @@ const SETTINGS_SCHEMA = {
         default: '',
         description:
           'Model name sent in requests to the local endpoint. Overridden by GEMINI_LOCAL_MODEL env var.',
-        showInDialog: true,
+        showInDialog: false,
       },
       timeout: {
         type: 'number',
@@ -2091,7 +2106,7 @@ const SETTINGS_SCHEMA = {
         default: 120000,
         description:
           'Timeout in milliseconds for requests to the local LLM. Overridden by GEMINI_LOCAL_TIMEOUT env var.',
-        showInDialog: true,
+        showInDialog: false,
       },
       enableTools: {
         type: 'boolean',
@@ -2101,7 +2116,7 @@ const SETTINGS_SCHEMA = {
         default: false,
         description:
           'Send tool/function declarations to the local LLM endpoint. Only enable if vLLM was started with --enable-auto-tool-choice and --tool-call-parser, or if Ollama is using a model with native tool support.',
-        showInDialog: true,
+        showInDialog: false,
       },
       promptMode: {
         type: 'enum',
@@ -2111,7 +2126,7 @@ const SETTINGS_SCHEMA = {
         default: 'lite',
         description:
           'System prompt size. "lite" sends a compact prompt optimized for local models (~3K chars). "full" sends the complete Gemini CLI prompt (~15-20K chars) for maximum capability at the cost of slower inference.',
-        showInDialog: true,
+        showInDialog: false,
         options: [
           { value: 'lite', label: 'Lite (recommended for local models)' },
           { value: 'full', label: 'Full (same as Gemini)' },
@@ -2126,7 +2141,49 @@ const SETTINGS_SCHEMA = {
         default: undefined,
         description:
           "Sampling temperature sent to the local LLM (0.0 – 2.0). Lower values are more deterministic; 0.6 is recommended for Qwen3 coding/tool-use. Leave unset to use the model's own generation_config.json default. Overridden by GEMINI_LOCAL_TEMPERATURE env var.",
-        showInDialog: true,
+        showInDialog: false,
+      },
+      // --- END LOCAL FORK ADDITION ---
+      // --- LOCAL FORK ADDITION (Phase 2.0.14) ---
+      topP: {
+        type: 'number',
+        label: 'Top-p (nucleus) sampling',
+        category: 'Advanced',
+        requiresRestart: false,
+        default: undefined,
+        description:
+          'Nucleus sampling cutoff sent to the local LLM, range (0, 1]. Z.ai recommends 1.0 for GLM-4.7-Flash tool-calling to suppress looping. Leave unset to use the server default. Overridden by GEMINI_LOCAL_TOP_P env var.',
+        showInDialog: false,
+      },
+      topK: {
+        type: 'number',
+        label: 'Top-k sampling',
+        category: 'Advanced',
+        requiresRestart: false,
+        default: undefined,
+        description:
+          'Top-k sampling cutoff sent to the local LLM (integer). vLLM accepts -1 to disable, or any positive integer. Leave unset to use the server default. Overridden by GEMINI_LOCAL_TOP_K env var.',
+        showInDialog: false,
+      },
+      minP: {
+        type: 'number',
+        label: 'Min-p sampling floor',
+        category: 'Advanced',
+        requiresRestart: false,
+        default: undefined,
+        description:
+          'Minimum-probability cutoff sent to the local LLM, range [0, 1]. Z.ai recommends 0.01 for GLM-4.7-Flash to suppress looping. Leave unset to use the server default. Overridden by GEMINI_LOCAL_MIN_P env var.',
+        showInDialog: false,
+      },
+      repetitionPenalty: {
+        type: 'number',
+        label: 'Repetition Penalty',
+        category: 'Advanced',
+        requiresRestart: false,
+        default: undefined,
+        description:
+          'Repetition penalty multiplier sent to the local LLM, range (0, 2]. 1.0 disables. Z.ai recommends 1.0 (disabled) for GLM-4.7-Flash to avoid forcing repeated tokens. Leave unset to use the server default. Overridden by GEMINI_LOCAL_REPETITION_PENALTY env var.',
+        showInDialog: false,
       },
       // --- END LOCAL FORK ADDITION ---
       // --- LOCAL FORK ADDITION (Phase 2.0.12) ---
@@ -2138,7 +2195,7 @@ const SETTINGS_SCHEMA = {
         default: 'lenient',
         description:
           'How aggressively to recover tool calls that the model emitted as raw text instead of structured tool_calls. "strict" only matches <tool_call>...</tool_call> wrappers (safest, zero false-positive risk). "lenient" (default) also matches bare <function=...> blocks when an orphaned </tool_call> closer is present (recovers Nemotron 3 / Mistral 4). "loose" matches any <function=...> block anywhere (highest recovery, has documentation-injection risk). Overridden by GEMINI_LOCAL_TOOL_CALL_PARSING env var. Hot-reloadable via /local toolcall <mode>.',
-        showInDialog: true,
+        showInDialog: false,
         options: [
           { value: 'strict', label: 'Strict (wrapped tool_call only)' },
           {
@@ -2157,7 +2214,7 @@ const SETTINGS_SCHEMA = {
         default: 32768,
         description:
           'Maximum context window size in tokens for the local LLM. The CLI uses this to trigger chat compression before the server rejects oversized requests. Auto-detected from the server when possible. Overridden by GEMINI_LOCAL_CONTEXT_LIMIT env var.',
-        showInDialog: true,
+        showInDialog: false,
       },
       compressionThreshold: {
         type: 'number',
@@ -2167,7 +2224,7 @@ const SETTINGS_SCHEMA = {
         default: 0.4,
         description:
           'Fraction of the local context limit at which automatic chat compression is triggered. Lower values compress earlier (safer for low-context models). Range: 0.1 to 0.95. Overridden by GEMINI_LOCAL_COMPRESSION_THRESHOLD env var.',
-        showInDialog: true,
+        showInDialog: false,
       },
       preserveFraction: {
         type: 'number',
@@ -2177,7 +2234,7 @@ const SETTINGS_SCHEMA = {
         default: 0.2,
         description:
           'Fraction of the most recent chat history kept raw (uncompressed) after a compression pass. Lower values produce a smaller post-compression history. Range: 0.05 to 0.5. Overridden by GEMINI_LOCAL_PRESERVE_FRACTION env var.',
-        showInDialog: true,
+        showInDialog: false,
       },
       autoTruncateOnOverflow: {
         type: 'boolean',
@@ -2187,7 +2244,7 @@ const SETTINGS_SCHEMA = {
         default: true,
         description:
           'When the local context window would still overflow even after force-compression, drop the oldest history pairs as a last-resort recovery. Disable to surface the overflow as an error instead. Overridden by GEMINI_LOCAL_AUTO_TRUNCATE env var.',
-        showInDialog: true,
+        showInDialog: false,
       },
       // --- LOCAL FORK ADDITION (Phase 2.0) ---
       adaptiveCompression: {
@@ -2198,7 +2255,7 @@ const SETTINGS_SCHEMA = {
         default: {},
         description:
           'Tracks recent compression ratios and tightens the compression threshold when summaries fail to free meaningful context. Auto-disabled when local.compressionThreshold is set explicitly.',
-        showInDialog: true,
+        showInDialog: false,
         properties: {
           enabled: {
             type: 'boolean',
@@ -2208,7 +2265,7 @@ const SETTINGS_SCHEMA = {
             default: true,
             description:
               'When true, tightens the compression trigger after weak compressions are observed. Has no effect if local.compressionThreshold is set. Overridden by GEMINI_LOCAL_ADAPTIVE_COMPRESSION_ENABLED env var.',
-            showInDialog: true,
+            showInDialog: false,
           },
           cooldownTurns: {
             type: 'number',
@@ -2218,7 +2275,7 @@ const SETTINGS_SCHEMA = {
             default: 5,
             description:
               'Minimum turns between adaptive tightenings to prevent runaway lowering. Range: 1 - 50. Overridden by GEMINI_LOCAL_ADAPTIVE_COMPRESSION_COOLDOWN env var.',
-            showInDialog: true,
+            showInDialog: false,
           },
           floor: {
             type: 'number',
@@ -2228,7 +2285,7 @@ const SETTINGS_SCHEMA = {
             default: 0.35,
             description:
               'Lower bound for the adaptive threshold. Tightening will never reduce the trigger below this value. Range: 0.1 - 0.9. Overridden by GEMINI_LOCAL_ADAPTIVE_COMPRESSION_FLOOR env var.',
-            showInDialog: true,
+            showInDialog: false,
           },
         },
       },
@@ -2240,7 +2297,7 @@ const SETTINGS_SCHEMA = {
         default: {},
         description:
           'Replaces the bulky `args.content` of stale write_file tool calls with a compact <file_written path="..." cached=true> marker. The file remains on disk and can be re-read on demand. Cuts history bloat in code-generation sessions by 50-90% on long runs.',
-        showInDialog: true,
+        showInDialog: false,
         properties: {
           enabled: {
             type: 'boolean',
@@ -2250,7 +2307,7 @@ const SETTINGS_SCHEMA = {
             default: true,
             description:
               'When true, runs ejection after each turn. Overridden by GEMINI_LOCAL_WRITE_FILE_EJECT_ENABLED env var.',
-            showInDialog: true,
+            showInDialog: false,
           },
           minAgeTurns: {
             type: 'number',
@@ -2260,7 +2317,7 @@ const SETTINGS_SCHEMA = {
             default: 1,
             description:
               'Number of turns from the end of history before a write_file call becomes eligible for ejection. 1 = "anything older than the latest turn". Range: 1 - 10. Overridden by GEMINI_LOCAL_WRITE_FILE_EJECT_MIN_AGE env var.',
-            showInDialog: true,
+            showInDialog: false,
           },
           minTokensPerCall: {
             type: 'number',
@@ -2270,7 +2327,7 @@ const SETTINGS_SCHEMA = {
             default: 200,
             description:
               'Minimum estimated token count for a single write_file content payload before ejection bothers acting. Avoids touching tiny writes. Overridden by GEMINI_LOCAL_WRITE_FILE_EJECT_MIN_TOKENS env var.',
-            showInDialog: true,
+            showInDialog: false,
           },
         },
       },
@@ -2282,7 +2339,7 @@ const SETTINGS_SCHEMA = {
         default: {},
         description:
           'Proactively force-compress before a turn if the projected tokens (history + request + reserved response) would exceed proactiveCompressAt of the local context window. Breaks the compress-then-immediately-overflow loop on small windows.',
-        showInDialog: true,
+        showInDialog: false,
         properties: {
           enabled: {
             type: 'boolean',
@@ -2292,7 +2349,7 @@ const SETTINGS_SCHEMA = {
             default: true,
             description:
               'When true, runs a synchronous budget check before each turn and force-compresses if the projection would exceed proactiveCompressAt. Overridden by GEMINI_LOCAL_PRE_TURN_BUDGET_ENABLED env var.',
-            showInDialog: true,
+            showInDialog: false,
           },
           reservedResponseTokens: {
             type: 'number',
@@ -2302,7 +2359,7 @@ const SETTINGS_SCHEMA = {
             default: 4096,
             description:
               "Tokens reserved for the model's response when projecting context usage. Larger values trigger compression earlier. Overridden by GEMINI_LOCAL_PRE_TURN_RESERVED_RESPONSE env var.",
-            showInDialog: true,
+            showInDialog: false,
           },
           proactiveCompressAt: {
             type: 'number',
@@ -2312,7 +2369,7 @@ const SETTINGS_SCHEMA = {
             default: 0.8,
             description:
               'Fraction of localContextLimit at which to force-compress before sending the turn. Range: 0.5 to 0.99. Overridden by GEMINI_LOCAL_PRE_TURN_COMPRESS_AT env var.',
-            showInDialog: true,
+            showInDialog: false,
           },
         },
       },
@@ -2324,7 +2381,7 @@ const SETTINGS_SCHEMA = {
         default: {},
         description:
           'Local-mode overrides for the ToolOutputMaskingService. When enabled, masking thresholds are auto-scaled to the local context window so masking actually engages on small windows (the upstream defaults assume 1M-token cloud models).',
-        showInDialog: true,
+        showInDialog: false,
         properties: {
           enabled: {
             type: 'boolean',
@@ -2334,7 +2391,7 @@ const SETTINGS_SCHEMA = {
             default: true,
             description:
               'When true, scales masking thresholds to localContextLimit so the masker actually fires on small local context windows. Disable to fall back to upstream cloud defaults. Overridden by GEMINI_LOCAL_TOOL_MASK_ENABLED env var.',
-            showInDialog: true,
+            showInDialog: false,
           },
           protectionFraction: {
             type: 'number',
@@ -2344,7 +2401,7 @@ const SETTINGS_SCHEMA = {
             default: 0.15,
             description:
               'Fraction of localContextLimit reserved as the "protection window" — the most recent N tool tokens are never masked. Range: 0.05 to 0.5. Overridden by GEMINI_LOCAL_TOOL_MASK_PROTECTION_FRACTION env var.',
-            showInDialog: true,
+            showInDialog: false,
           },
           prunableFraction: {
             type: 'number',
@@ -2354,7 +2411,7 @@ const SETTINGS_SCHEMA = {
             default: 0.1,
             description:
               'Fraction of localContextLimit accumulated as prunable tool output before masking actually triggers. Range: 0.05 to 0.5. Overridden by GEMINI_LOCAL_TOOL_MASK_PRUNABLE_FRACTION env var.',
-            showInDialog: true,
+            showInDialog: false,
           },
           protectLatestTurn: {
             type: 'boolean',
@@ -2364,12 +2421,158 @@ const SETTINGS_SCHEMA = {
             default: true,
             description:
               'When true, never mask any tool output in the most recent conversation turn. Recommended on. Overridden by GEMINI_LOCAL_TOOL_MASK_PROTECT_LATEST env var.',
-            showInDialog: true,
+            showInDialog: false,
           },
         },
       },
     },
   },
+
+  // --- LOCAL FORK ADDITION (Phase 2.1) ---
+  providers: {
+    type: 'object',
+    label: 'Hosted Providers',
+    category: 'Advanced',
+    requiresRestart: false,
+    default: {},
+    description:
+      'Configuration for hosted OpenAI-compatible LLM providers (OpenAI, plus Qwen / Kimi / DeepSeek / Groq / OpenRouter / Together / Fireworks / Mistral / xAI in follow-up versions). Active provider is selected by `providers.active`; per-provider overrides go under `providers.<id>` (e.g. providers.openai.model). API keys are NEVER stored here — use `/provider set <id> key` to write them to the OS keychain, or set the per-provider env var (OPENAI_API_KEY, etc.).',
+    showInDialog: false,
+    properties: {
+      active: {
+        type: 'string',
+        label: 'Active Provider',
+        category: 'Advanced',
+        requiresRestart: false,
+        default: '',
+        description:
+          'Id of the currently selected hosted provider (e.g. "openai"). Overridden by GEMINI_PROVIDER env var. Run /provider list to see available providers.',
+        showInDialog: false,
+      },
+      openai: {
+        type: 'object',
+        label: 'OpenAI',
+        category: 'Advanced',
+        requiresRestart: false,
+        default: {},
+        description:
+          'Per-instance overrides for the OpenAI provider. Defaults are taken from the registry; only set fields here that you want to override (e.g. a different model). API key is intentionally NOT a settings field — use /provider set openai key.',
+        showInDialog: false,
+        properties: {
+          model: {
+            type: 'string',
+            label: 'OpenAI Model',
+            category: 'Advanced',
+            requiresRestart: false,
+            // Empty string means "use registry default (gpt-4o)". The
+            // validator and resolveProvider() both treat '' as unset so
+            // the settings pipeline materialising this default is harmless.
+            default: '',
+            description:
+              'Model id sent to OpenAI (e.g. gpt-4o-mini, gpt-4o, o4-mini). Leave empty to use the registry default (gpt-4o).',
+            showInDialog: false,
+          },
+          baseUrl: {
+            type: 'string',
+            label: 'OpenAI Base URL',
+            category: 'Advanced',
+            requiresRestart: false,
+            // Empty string means "use registry default URL". Same
+            // treatment as model above.
+            default: '',
+            description:
+              'Override the chat-completions endpoint URL (e.g. for Azure OpenAI or an OpenAI-compatible proxy). Leave empty to use https://api.openai.com/v1/chat/completions.',
+            showInDialog: false,
+          },
+          contextLimit: {
+            type: 'number',
+            label: 'Context Window Limit (tokens)',
+            category: 'Advanced',
+            requiresRestart: false,
+            default: 128000,
+            description:
+              'Maximum context window size in tokens. Used to drive smart-context compression; should match (or be lower than) the model card. Default 128000 covers gpt-4o / gpt-4o-mini.',
+            showInDialog: false,
+          },
+          compressionThreshold: {
+            type: 'number',
+            label: 'Compression Threshold (fraction)',
+            category: 'Advanced',
+            requiresRestart: false,
+            default: 0.7,
+            description:
+              'Fraction of the context limit at which automatic chat compression is triggered. Range: 0.1 to 0.95. Hosted providers tolerate higher values than local LLMs because the cost is dollars-per-token, not seconds-per-token.',
+            showInDialog: false,
+          },
+          preserveFraction: {
+            type: 'number',
+            label: 'Preserve Fraction (raw history kept)',
+            category: 'Advanced',
+            requiresRestart: false,
+            default: 0.3,
+            description:
+              'Fraction of the most recent chat history kept raw (uncompressed) after a compression pass. Range: 0.05 to 0.5.',
+            showInDialog: false,
+          },
+          promptMode: {
+            type: 'enum',
+            label: 'Prompt Mode',
+            category: 'Advanced',
+            requiresRestart: false,
+            default: 'full',
+            description:
+              'System prompt size. "full" (recommended for hosted providers) sends the complete Gemini CLI prompt. "lite" sends a compact prompt — useful only for cost-sensitive deployments.',
+            showInDialog: false,
+            options: [
+              {
+                value: 'full',
+                label: 'Full (recommended for hosted providers)',
+              },
+              { value: 'lite', label: 'Lite (compact, cost-sensitive)' },
+            ],
+          },
+          enableTools: {
+            type: 'boolean',
+            label: 'Enable Tool Calls',
+            category: 'Advanced',
+            requiresRestart: false,
+            default: true,
+            description:
+              'Send tool/function declarations to OpenAI. Default on; turn off for chat-only workflows where tool execution is undesirable.',
+            showInDialog: false,
+          },
+          timeout: {
+            type: 'number',
+            label: 'Request Timeout (ms)',
+            category: 'Advanced',
+            requiresRestart: false,
+            default: 120000,
+            description:
+              'Timeout in milliseconds for requests to OpenAI. Most chats complete in under 30s; the larger default accommodates long o-series reasoning calls.',
+            showInDialog: false,
+          },
+        },
+      },
+      // --- LOCAL FORK ADDITION (Phase 2.3) ---
+      custom: {
+        type: 'object',
+        label: 'Custom Providers',
+        category: 'Advanced',
+        requiresRestart: false,
+        default: {} as Record<string, CustomProviderDefinition>,
+        description:
+          'User-defined OpenAI-compatible providers (e.g. local vLLM / Ollama / llama.cpp servers, Groq, Fireworks, Anyscale, internal Azure deployments). Add via /provider add, remove via /provider remove. Built-in providers (gemini-* and openai) cannot be defined here. Each entry stores baseUrl, displayName, optional defaultModel, optional defaultContextLimit, and optional apiKeyEnvVar (empty means unauthenticated). API keys themselves live in the OS keychain — never in this file.',
+        showInDialog: false,
+        mergeStrategy: MergeStrategy.SHALLOW_MERGE,
+        additionalProperties: {
+          type: 'object',
+          ref: 'CustomProviderDefinition',
+        },
+      },
+      // --- END LOCAL FORK ADDITION ---
+    },
+  },
+  // --- END LOCAL FORK ADDITION ---
 
   experimental: {
     type: 'object',

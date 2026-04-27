@@ -74,6 +74,9 @@ interface SlashCommandProcessorActions {
   openModelDialog: () => void;
   openVoiceModelDialog: () => void;
   openLocalDialog: () => void;
+  // --- LOCAL FORK ADDITION (Phase 2.2) ---
+  openProviderDialog: () => void;
+  // --- END LOCAL FORK ADDITION ---
   openAgentConfigDialog: (
     name: string,
     displayName: string,
@@ -512,7 +515,11 @@ export const useSlashCommandProcessor = (
                       return { type: 'handled' };
                     case 'local':
                       actions.openLocalDialog();
+                    // --- LOCAL FORK ADDITION (Phase 2.2) ---
+                    case 'provider':
+                      actions.openProviderDialog();
                       return { type: 'handled' };
+                    // --- END LOCAL FORK ADDITION ---
                     case 'agentConfig': {
                       // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion
                       const props = result.props as Record<string, unknown>;

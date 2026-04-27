@@ -48,6 +48,7 @@ import {
   type HookDefinition,
   type HookEventName,
   type OutputFormat,
+  type ProviderInstanceConfig,
   detectIdeFromEnv,
 } from '@google/gemini-cli-core';
 import {
@@ -1150,6 +1151,20 @@ export async function loadCliConfig(
       ? parseFloat(process.env['GEMINI_LOCAL_TEMPERATURE'])
       : (settings.local?.temperature ?? undefined),
     // --- END LOCAL FORK ADDITION ---
+    // --- LOCAL FORK ADDITION (Phase 2.0.14) ---
+    localTopP: process.env['GEMINI_LOCAL_TOP_P']
+      ? parseFloat(process.env['GEMINI_LOCAL_TOP_P'])
+      : (settings.local?.topP ?? undefined),
+    localTopK: process.env['GEMINI_LOCAL_TOP_K']
+      ? parseInt(process.env['GEMINI_LOCAL_TOP_K'], 10)
+      : (settings.local?.topK ?? undefined),
+    localMinP: process.env['GEMINI_LOCAL_MIN_P']
+      ? parseFloat(process.env['GEMINI_LOCAL_MIN_P'])
+      : (settings.local?.minP ?? undefined),
+    localRepetitionPenalty: process.env['GEMINI_LOCAL_REPETITION_PENALTY']
+      ? parseFloat(process.env['GEMINI_LOCAL_REPETITION_PENALTY'])
+      : (settings.local?.repetitionPenalty ?? undefined),
+    // --- END LOCAL FORK ADDITION ---
     localContextLimit: process.env['GEMINI_LOCAL_CONTEXT_LIMIT']
       ? parseInt(process.env['GEMINI_LOCAL_CONTEXT_LIMIT'], 10)
       : settings.local?.contextLimit || undefined,
@@ -1224,6 +1239,43 @@ export async function loadCliConfig(
       process.env['GEMINI_LOCAL_TOOL_MASK_PROTECT_LATEST'] !== undefined
         ? process.env['GEMINI_LOCAL_TOOL_MASK_PROTECT_LATEST'] === 'true'
         : (settings.local?.toolOutputMasking?.protectLatestTurn ?? undefined),
+    // --- LOCAL FORK ADDITION (Phase 2.1) ---
+    // Hosted-provider settings. The Config constructor handles the env-var
+    // override for `providersActive` (GEMINI_PROVIDER), so we just forward
+    // the settings.json values here. `providersConfig` is shape-validated
+    // lazily on first read so an invalid override surfaces as a clear
+    // /provider error instead of crashing CLI boot.
+    providersActive:
+      typeof settings.providers?.active === 'string'
+        ? settings.providers.active.trim() || undefined
+        : undefined,
+    providersConfig:
+      typeof settings.providers === 'object' && settings.providers !== null
+        ? // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion -- runtime-narrowed: filter() retains only [k, object|null!=null] pairs whose values come from JSON; Config validates each entry's shape lazily on first read so an invalid override surfaces as a clear /provider error rather than crashing CLI boot
+          (Object.fromEntries(
+            Object.entries(
+              settings.providers as Record<string, unknown>,
+            ).filter(
+              ([k, v]) =>
+                // Exclude the `active` discriminator and the Phase 2.3
+                // `custom` block — those are not per-instance overrides.
+                k !== 'active' &&
+                k !== 'custom' &&
+                typeof v === 'object' &&
+                v !== null,
+            ),
+          ) as Record<string, ProviderInstanceConfig>)
+        : undefined,
+    // Phase 2.3: pass the user-defined custom provider map through to
+    // Config. The schema typing already constrains entries to the
+    // CustomProviderDefinition shape; runtime shape failures fall back to
+    // an empty entry (the merged registry will just not include them).
+    providersCustom:
+      typeof settings.providers?.custom === 'object' &&
+      settings.providers.custom !== null
+        ? settings.providers.custom
+        : undefined,
+    // --- END LOCAL FORK ADDITION ---
     retryFetchErrors: settings.general?.retryFetchErrors,
     billing: settings.billing,
     vertexAiRouting: settings.billing?.vertexAi,

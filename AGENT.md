@@ -834,6 +834,99 @@ Files touched (fenced with `// --- LOCAL FORK ADDITION (Phase 2.0.13) ---`):
 - README.md — `local.temperature` table row, URL normalization note
 - AGENT.md — this entry
 
+DONE — Phase 2.0.14 Extended sampling forwarding for local LLMs (shipped):
+
+Motivation: GLM-4.7-Flash exhibits a documented latent looping behavior on long
+autonomous tool-calling sessions (e.g. the "WebOS architect" prompt: 30+
+sequential tool calls). Initial diagnosis suspected reasoning-leakage into the
+content stream; this was ruled out after `--reasoning-parser glm45` /
+`deepseek_r1` were verified active and direct vLLM probes confirmed the model
+was emitting clean `delta.reasoning` and well-formed `tool_calls` on early
+turns. Z.ai's official mitigation per
+[Unsloth's GLM-4.7-Flash docs](https://unsloth.ai/docs/models/glm-4.7-flash) is
+a specific sampler shape:
+`temperature=0.7, top_p=1.0, top_k=-1, min_p=0.01, repetition_penalty=1.0`. vLLM
+has no server-side flag to set defaults for `top_p` / `min_p` /
+`repetition_penalty` — they must come from the client.
+
+Phase 2.0.13 forwarded only `temperature`. Phase 2.0.14 extends that to four
+additional sampler controls, all independently optional:
+
+- `local.topP` (`GEMINI_LOCAL_TOP_P`) — nucleus cutoff (0, 1]
+- `local.topK` (`GEMINI_LOCAL_TOP_K`) — integer; `-1` disables
+- `local.minP` (`GEMINI_LOCAL_MIN_P`) — floor [0, 1]
+- `local.repetitionPenalty` (`GEMINI_LOCAL_REPETITION_PENALTY`) — (0, 2]; `1.0`
+  disables
+
+Each is hot-reloadable via `/local topp|topk|minp|reppen <value|off>`. Each is
+forwarded as a top-level field in the OpenAI-compatible request body (vLLM
+accepts `top_p` natively; `top_k`, `min_p`, `repetition_penalty` are vLLM
+extensions also accepted at the top level — no `extra_body` indirection needed
+since we write the body directly via `fetch()`).
+
+Design properties:
+
+- **Additive only.** All four fields default to `undefined` / `null`. When
+  unset, request bodies omit the field, so other models (Qwen, Gemma, Devstral,
+  Nemotron) see byte-identical payloads to Phase 2.0.13.
+- **Mirrors Phase 2.0.13 plumbing exactly.** Same fence comments, same env-var
+  pattern, same `/local` sub-command pattern, same `refreshLocalConfig`
+  hot-reload path. Rebase-safe.
+- **Out-of-range values silently coerce to null** (matching the temperature
+  validator). The CLI never sends an invalid sampler value to the server.
+
+Files touched (fenced with `// --- LOCAL FORK ADDITION (Phase 2.0.14) ---`):
+
+- packages/core/src/config/config.ts — four new optional params (`localTopP`,
+  `localTopK`, `localMinP`, `localRepetitionPenalty`), private fields,
+  constructor parsing with range validation, four getters, `refreshLocalConfig`
+  update bag entries
+- packages/cli/src/config/config.ts — four new param wirings + env-var fallbacks
+- packages/cli/src/config/settingsSchema.ts — four `local.*` schema entries
+- packages/core/src/core/localLlmContentGenerator.ts — forward the four fields
+  in both `generateContent` and `generateContentStream` request bodies
+- packages/cli/src/ui/commands/localCommand.ts — `makeSamplerSubCommand()`
+  factory + four `/local topp|topk|minp|reppen` sub-commands, updated
+  `/local show` output and help string
+- packages/core/src/config/localSamplerConfig.test.ts — new fork-only test file
+  covering all four getters (defaults, valid values, edge cases, out-of-range
+  rejection, env-var fallback) and `refreshLocalConfig` hot-reload semantics (32
+  tests, all passing)
+- README.md — extended Key configuration table with four new rows; updated the
+  GLM-4.7-Flash settings snippet to include the full Z.ai sampler shape with
+  citation
+- AGENT.md — this entry
+
+Honest caveat: this does not "cure" GLM-4.7-Flash. The Z.ai sampler shape is the
+documented best mitigation, but GLM still has latent looping tendencies on very
+long autonomous sessions. For 30+ sequential-tool-call agentic builds (e.g.
+WebOS architect prompt), Qwen 3.6 35B A3B remains the better choice per the
+README's recommended-models section.
+
+EMPIRICAL FINDING (post-Phase 2.0.14, GLM-4.7-Flash on DGX Spark):
+
+Even with all Phase 2.0.14 mitigations applied — Z.ai's full recommended sampler
+shape (`temperature 0.7, top_p 1.0, min_p 0.01, repetition_penalty 1.0`),
+`--reasoning-parser glm45` (and tested also with `deepseek_r1`),
+`local.toolCallParsing: strict`, and the community workaround of bumping
+`temperature` to 1.0 — GLM-4.7-Flash still loops uncontrollably on multi-turn
+tool-calling sessions. The looping pattern is distinct from the _content_ loops
+the sampler shape is designed to prevent: it loops on the _tool-call_ shape
+itself, repeatedly emitting the same tool invocation (often with empty/invalid
+arguments) until the CLI's loop detector halts it. Direct vLLM probes on turns
+1–2 in isolation show the model behaving correctly with clean `delta.reasoning`
+and well-formed `tool_calls`, but any prompt requiring 5+ sequential tool calls
+(e.g. the WebOS architect prompt) reliably triggers the loop.
+
+Conclusion: GLM-4.7-Flash is **not recommended for autonomous agentic workloads
+on this fork.** The README's GLM-4.7-Flash entry has been demoted from
+"Verified" to a not-recommended warning. The Phase 2.0.14 sampler plumbing
+remains valuable for other models that may benefit from the same controls (e.g.
+future GLM iterations, custom sampler tuning per model), so the implementation
+is kept; only the GLM-specific recommendation is revoked. Use Qwen 3.6 35B A3B
+for autonomous builds; use Gemma 4 26B A4B for short single-shot tasks; use
+GLM-4.7-Flash only for short interactive single-turn use.
+
 TODO #1 (highest priority) — Eject from a different SHAPE, not just different
 content. Today Layer 3 rewrites `args.content` of the existing `functionCall`
 part. Replace the entire `functionCall` part with a `text` part instead, e.g.:
@@ -921,6 +1014,250 @@ rarely (1 call per session is typical) so this is low urgency but completes the
 "fully local" goal. Touches: packages/core/src/core/client.ts
 (LoopDetectionService init), packages/core/src/config/config.ts
 
+DONE — Phase 2.1.1 Unify Provider/Local Auth Mode (shipped):
+
+Symptom + concern: Phase 2.1 introduced `AuthType.PROVIDER` as a sibling of
+`AuthType.LOCAL`. Both did the same thing wire-protocol-wise (OpenAI Chat
+Completions), and both could be "live" at the same time — which produced a real
+bug in the wild: a user successfully calling GPT-5 saw the footer report
+"Authenticated with local /auth" and `nvidia/...` as the model, because
+`useAuth` short-circuited on legacy `local.url` and `Config.refreshAuth` didn't
+re-pin `config.model` for the provider path.
+
+Architecture (one sentence): collapse the two parallel auth-types into one
+(`AuthType.LOCAL`) and route every OpenAI-compatible endpoint — localhost OR
+hosted — through a single materialization point,
+`Config.getEffectiveLocalConfig()`.
+
+Key design choices (preserve everything that worked, remove the duplication):
+
+- **One auth type, one code path.** `AuthType.PROVIDER` is removed from the
+  enum, from `getAuthTypeFromEnv()`, from `Config.refreshAuth()`'s fast-path,
+  from `validateAuthMethod()`, and from the precedence branch in `useAuth`.
+  `GEMINI_PROVIDER` still works — it now maps to `AuthType.LOCAL` like
+  `GEMINI_LOCAL_URL` does. Net: ~5 fewer rebase fences in upstream-shared files.
+- **`/provider` is the canonical command.** Local presets (`local-vllm`,
+  `local-llamacpp`, `local-generic`) now live in the same registry as the hosted
+  entries with `requiresApiKey: false`. `/provider use local-vllm` works;
+  `/provider list` groups output into "Hosted providers" and "Local presets";
+  `/provider models <local-id>` skips the auth header;
+  `/provider set <local-id> key …` is rejected with an actionable error.
+- **`/local` is a deprecated alias.** Still fully functional — same dialog, same
+  hot-reload, same `local.*` settings shape. The description nudges toward
+  `/provider` and the dialog title reads "Local LLM (deprecated — prefer
+  /provider)". This protects every existing vLLM setup (Qwen3-Coder- Next-FP8,
+  GLM-4.7-Flash, Gemma 4 31B, Nemotron-3-Nano-30B) — they keep working with no
+  settings migration.
+- **`getEffectiveLocalConfig()` is the single materialization point.** It
+  returns the resolved
+  `{url, model, contextLimit, promptMode, parserMode, timeout, enableTools, source, displayName, providerId, requiresApiKey, apiKeyEnvVar}`
+  for the active config. Provider path wins when `providers.active` is set;
+  legacy-local path is the fallback when only `local.url` is configured. A
+  malformed provider config catches and falls back to legacy-local rather than
+  locking the user out (the actionable error surfaces later in
+  `createContentGenerator`). Existing
+  `getLocalUrl/getLocalModel/isLocalMode/getLocalContextLimit/etc.` delegate to
+  it, so callers see the right value regardless of which path is live.
+- **`UserIdentity` is one block, not two.** The footer reads
+  `Active: <displayName>` (e.g. `Active: OpenAI` or `Active: Local vLLM`),
+  followed by URL/Model/Context/Prompt/Parser. The `API key:` row is only
+  rendered when `requiresApiKey === true`. This removes the entire class of
+  "wrong block displayed" bugs.
+
+Files touched (Phase 2.1.1 fences =
+`// --- LOCAL FORK ADDITION (Phase 2.1.1) ---`):
+
+- packages/core/src/providers/providerRegistry.ts — extended
+  `ProviderDefinition` with `requiresApiKey: boolean`; added `local-vllm`,
+  `local-llamacpp`, `local-generic` entries with `requiresApiKey: false`, empty
+  `apiKeyEnvVar`, and a `noAuth` header builder.
+- packages/core/src/config/config.ts — NEW `getEffectiveLocalConfig()` + private
+  `getLegacyLocalContextLimit()`. `refreshAuth(LOCAL)` now calls
+  `setModel(eff.model, true)` when source is `provider` so the UI never goes
+  stale. `refreshProviderConfig` re-pins to `AuthType.LOCAL`. Existing getters
+  (`getLocalUrl`, `getLocalModel`, `isLocalMode`, `isLocalToolsEnabled`,
+  `getLocalPromptMode`, `getLocalContextLimit`) delegate to the new method.
+- packages/core/src/core/contentGenerator.ts — removed `AuthType.PROVIDER` enum
+  value. `getAuthTypeFromEnv()` now maps both `GEMINI_PROVIDER` and
+  `GEMINI_LOCAL_URL` to `AuthType.LOCAL`. The LOCAL branch in
+  `createContentGenerator` reads `getEffectiveLocalConfig()` and conditionally
+  resolves `apiKey` via `resolveProviderApiKey` only when
+  `effective.requiresApiKey` is true.
+- packages/cli/src/ui/auth/useAuth.ts — removed the `GEMINI_PROVIDER` precedence
+  branch; the unified branch now fires when either provider OR legacy-local is
+  configured.
+- packages/cli/src/config/auth.ts — removed the `AuthType.PROVIDER` arm of
+  `validateAuthMethod`.
+- packages/cli/src/ui/components/UserIdentity.tsx — collapsed dual local-info /
+  provider-info blocks into one block driven by `getEffectiveLocalConfig()`.
+  API-key row is conditional.
+- packages/cli/src/ui/commands/providerCommand.ts — `/provider list` groups
+  hosted providers vs local presets; `/provider models` skips auth header for
+  local presets; `/provider set <local-id> key` is rejected.
+- packages/cli/src/ui/components/ProviderDialog.tsx — model picker passes empty
+  key for local presets; `keyState` reads "not required (local server)"; "API
+  key" row is hidden for local-preset providers.
+- packages/cli/src/ui/commands/localCommand.ts — kept as deprecated alias.
+  Description nudges toward `/provider`; dialog title flagged.
+- packages/cli/src/ui/components/LocalDialog.tsx — title reads
+  `Local LLM (deprecated — prefer /provider)`.
+- packages/core/src/providers/providerModelDiscovery.ts — `apiKey` is now
+  optional; `Authorization` header only attached when non-empty.
+- packages/core/src/config/getEffectiveLocalConfig.test.ts — NEW. 9 tests
+  covering: undefined when nothing is set, provider path with registry defaults,
+  override merge, local-preset model placeholder, user override on a local
+  preset, legacy-local fallback, malformed-provider soft failure, getter
+  delegation, and `isLocalMode` precedence.
+- packages/core/src/providers/providerRegistry.test.ts — extended for local
+  presets (registry shape, conditional field requirements, apiKeyEnvVar
+  uniqueness skipping local presets, model-override preservation).
+- packages/cli/src/ui/components/UserIdentity.test.tsx — replaced the single
+  local-mode test with two: legacy-local source render and hosted-provider
+  source render (with API-key row).
+- packages/cli/src/ui/commands/localCommand.test.ts — updated description
+  assertion to expect "deprecated" + "/provider"; refreshed the documented
+  sub-command list (was already stale before this phase).
+
+Migration safety: existing `~/.gemini/settings.json` with `local.url`,
+`local.model`, etc. continues to work without modification. The "Phase 2.1.1
+hot-fix" of the footer-vs-traffic mismatch is now structural — there's only one
+active mode, so there's only one source of truth for what to display.
+
+DONE — Phase 2.1 Hosted Provider Support, OpenAI first (shipped):
+
+Symptom + concern: the fork until now only supported (a) Google / Code-Assist
+auth and (b) the `/local` OpenAI-compat path. Users who wanted to point the same
+CLI at hosted endpoints (OpenAI, OpenRouter, Together, Fireworks, etc.) had to
+spin up a local proxy. That's strictly worse than just letting the CLI call
+those endpoints directly, since they all speak the same OpenAI Chat Completions
+wire format the local generator already emits. Phase 2.1 delivers that without
+forking the generator.
+
+Architecture (one sentence): generalize `LocalLlmContentGenerator` (re- exported
+as `OpenAICompatContentGenerator`) by adding an optional
+`{ apiKey, extraHeaders }` constructor arg, then wire it from a new provider
+registry + credential store + `/provider` command + UI dialog. Local mode is
+byte-identical to pre-Phase-2.1 — when `auth === undefined`, no Authorization
+header is sent and the request shape is unchanged.
+
+Key design choices:
+
+- **Reuse, don't fork.** One generator class serves both `/local` (no auth) and
+  hosted providers (Bearer + extra headers). All Mistral / Qwen / Devstral /
+  Nemotron quirk patches added in Phases 2.0.4–2.0.12 apply unchanged to hosted
+  providers; OpenRouter routing to a Mistral model inherits the entire
+  orphan-tool-call recovery story for free.
+- **Registry is pure data.** `providerRegistry.ts` is a frozen map; the Phase 1
+  entry is `openai`. Adding Qwen / Kimi / DeepSeek / Groq / OpenRouter /
+  Together / Fireworks / Mistral / xAI is a one-entry append. Anthropic is
+  explicitly OUT of scope — it speaks `anthropic-messages` not `openai-chat`, so
+  it requires a separate adapter and lands in a follow-up phase.
+- **Security model.** API keys live in the OS keychain (one entry per provider,
+  namespaced `gemini-cli-provider-<id>`) or in the documented env var
+  (`OPENAI_API_KEY`, etc.). Keys are NEVER stored in `settings.json`, NEVER
+  logged, and NEVER surfaced through telemetry. `LoggingContentGenerator` only
+  forwards request `contents` and response payloads to the telemetry layer — it
+  has no access to fetch-level headers, so the Bearer token can't leak through
+  that surface even accidentally. There is a regression test
+  (`loggingContentGenerator.redaction.test.ts`) that wires a known canary key
+  end-to-end and asserts the literal string never appears in any logged event.
+- **Hot reload, not restart.**
+  `Config.refreshProviderConfig({ active, setConfig, removeProvider })` rebuilds
+  the active generator on the next request, mirroring the `refreshLocalConfig`
+  shape. No CLI restart is required for `/provider use|set|remove`.
+- **Headless and interactive.** Bare `/provider` opens a dialog;
+  `/provider list|use|set|remove` work in ACP / non-interactive mode. This
+  matches the `/local` command shape and the `/help` discoverability rule (Rule
+  11).
+
+Files touched (every block in upstream-shared files is fenced with
+`// --- LOCAL FORK ADDITION (Phase 2.1) ---` …
+`// --- END LOCAL FORK ADDITION ---` for rebase safety; brand-new files have no
+fences per Category C):
+
+- packages/core/src/providers/providerRegistry.ts — NEW. ProviderDefinition
+  interface, frozen PROVIDER_REGISTRY map (openai entry), resolveProvider,
+  validateProviderInstanceConfig, UnknownProviderError,
+  InvalidProviderConfigError.
+- packages/core/src/providers/providerCredentialStorage.ts — NEW. Per- provider
+  HybridTokenStorage with read-through cache; loadProviderApiKey,
+  saveProviderApiKey (throws on keychain failure with actionable message),
+  clearProviderApiKey, resolveProviderApiKey (env-wins-over- keychain).
+- packages/core/src/index.ts — fenced exports of the two new modules.
+- packages/core/src/core/localLlmContentGenerator.ts — fenced OpenAICompatAuth
+  interface; constructor adds optional `auth?` param; `fetchWithTimeout` adds
+  `Authorization: Bearer <key>` and merges `extraHeaders`. Local mode (auth
+  undefined) is byte-identical. `OpenAICompatContentGenerator` aliased export.
+- packages/core/src/core/contentGenerator.ts — fenced AuthType.PROVIDER,
+  GEMINI_PROVIDER env detection in `getAuthTypeFromEnv()`, and provider branch
+  in `createContentGenerator()` that resolves provider config, loads the API
+  key, and instantiates OpenAICompatContentGenerator.
+- packages/core/src/config/config.ts — fenced `providersActive`,
+  `providersConfig` fields + getters (`getActiveProviderId`,
+  `getProviderConfig`, `getActiveProviderResolved`) + `refreshProviderConfig`
+  hot-reload method.
+- packages/cli/src/config/settingsSchema.ts — fenced `providers` block with
+  active + per-provider override schema.
+- packages/cli/src/config/config.ts — fenced wiring from `settings.providers`
+  into the Config constructor.
+- packages/cli/src/ui/commands/providerCommand.ts — NEW. `/provider` +
+  `list|use|set|remove` sub-commands; bare command returns
+  `{ type: 'dialog', dialog: 'provider' }` so the UI can pick it up.
+- packages/cli/src/services/BuiltinCommandLoader.ts — fenced registration of
+  providerCommand.
+- packages/cli/src/ui/commands/types.ts — fenced `'provider'` dialog literal.
+- packages/cli/src/ui/hooks/slashCommandProcessor.ts — fenced
+  `openProviderDialog` action + `case 'provider'` dispatch.
+- packages/cli/src/ui/hooks/useProviderCommand.ts — NEW. Mirrors
+  useLocalCommand: isProviderDialogOpen + open/close.
+- packages/cli/src/ui/AppContainer.tsx — fenced wiring of useProviderCommand
+  into UIState/UIActions.
+- packages/cli/src/ui/contexts/UIStateContext.tsx — fenced isProviderDialogOpen
+  field.
+- packages/cli/src/ui/contexts/UIActionsContext.tsx — fenced
+  openProviderDialog/closeProviderDialog fields.
+- packages/cli/src/ui/components/ProviderDialog.tsx — NEW. Modeled on
+  LocalDialog: BaseSettingsDialog over `providers.<active>.*` keys, status panel
+  showing resolved model/baseUrl/context + key state, hot- reload of
+  model/baseUrl/contextLimit/etc. via refreshProviderConfig.
+- packages/cli/src/ui/components/DialogManager.tsx — fenced conditional render
+  of ProviderDialog.
+- packages/cli/src/ui/components/UserIdentity.tsx — fenced PROVIDER auth- type
+  block: shows provider name, model, base URL, context, prompt mode.
+- packages/cli/src/test-utils/render.tsx — fenced
+  openProviderDialog/closeProviderDialog mock fields.
+- packages/cli/src/ui/hooks/slashCommandProcessor.test.tsx — fenced
+  openProviderDialog mock field.
+- docs/reference/commands.md — fenced `/provider` reference section (commands,
+  security model, sub-commands, env-var activation).
+- packages/core/src/providers/providerRegistry.test.ts — NEW. 11 tests: registry
+  shape, env-var uniqueness, resolveProvider defaults + overrides,
+  malformed-config validation accumulation.
+- packages/core/src/providers/providerCredentialStorage.test.ts — NEW. 12 tests:
+  cache, save/load/clear, env-wins-over-keychain, env-trim, empty-env fallback,
+  error surfacing.
+- packages/core/src/core/localLlmContentGenerator.bearer.test.ts — NEW. 5 tests:
+  alias identity, no-Authorization-when-local, Bearer-when- hosted, extraHeaders
+  merge order, key never appears in non-2xx error.
+- packages/cli/src/ui/commands/providerCommand.test.ts — NEW. 20 tests covering
+  list / use / set (model | baseUrl | key) / remove paths including unknown-id
+  rejection and keychain-error surfacing.
+- packages/core/src/core/loggingContentGenerator.redaction.test.ts — NEW. 3
+  tests asserting a canary API key never appears in any telemetry payload on
+  success OR error paths, with the bearer header verified on the wire so we know
+  the test is meaningful.
+
+Explicit non-goals (Phase 2.1 ships only what's listed; the following are
+deliberate follow-ups, not bugs):
+
+- Anthropic provider. `wireFormat: 'anthropic-messages'` is reserved in the type
+  and the registry shape supports it, but the adapter is a separate piece of
+  work.
+- Masked-input dialog for `/provider set <id> key`. Today the key appears in
+  scrollback; the user is responsible for clearing it (Ctrl+L). Documented in
+  `/provider set` help text and in `docs/reference/commands.md`.
+- `embedContent()` on hosted providers. Same constraint as `/local`.
+
 KNOWN CONSTRAINTS - embedContent() throws — not supported in local mode -
 --dry-run for API calls not yet implemented (no existing cross-cutting dry-run
 in the codebase) - Tool calls depend on the local model's function calling
@@ -953,3 +1290,295 @@ exactly once at startup. Investigation summary:
   live trace with `NODE_OPTIONS='--trace-deprecation' gemini-local-cli` to
   confirm the offending `require()` call site if it surfaces in your
   environment.
+
+DONE — Phase 2.2 Unified Provider Registry (shipped):
+
+Phase 2.1.1 unified the auth-mode mental model (everything OpenAI-shaped runs
+through `AuthType.LOCAL`, hosted-vs-local distinguished by
+`Config.getEffectiveLocalConfig().providerId`). Phase 2.2 finishes the
+unification by pulling **upstream Gemini paths** into the same
+`/provider`-driven registry, so that:
+
+1. `/local` is a duplicate of `/provider local-vllm` — so `/local` is hard-
+   removed and the `local.*` settings block is migrated once on startup.
+2. Switching to upstream Google OAuth or Vertex AI is just
+   `/provider use gemini-oauth` (or `gemini-apikey` / `gemini-vertex`); the user
+   no longer has to know about `/auth` for the most common workflow.
+3. Token usage is bucketed per provider so `/stats` and `/quit` answer "where
+   did this session's tokens actually go?" when the user toggles between, e.g.,
+   `gemini-oauth` and `local-vllm` mid-session.
+
+Architecture:
+
+- `ProviderDefinition` (packages/core/src/providers/providerRegistry.ts) gains
+  three fields: `wireFormat: 'openai-chat' | 'gemini' | 'anthropic-messages'`,
+  `authType: AuthType`, and `validSettingKeys: readonly string[]`.
+  `gemini-oauth`, `gemini-apikey`, and `gemini-vertex` are registered with
+  `wireFormat: 'gemini'`. OpenAI-compat entries keep `wireFormat: 'openai-chat'`
+  and `authType: AuthType.LOCAL`.
+- `AuthType` was extracted into a leaf module
+  (packages/core/src/core/authType.ts) to break a runtime circular import
+  (`config.ts → providerRegistry.ts → contentGenerator.ts → index.ts → config.ts`).
+  `contentGenerator.ts` re-exports it for back-compat so external imports of
+  `AuthType` from `@google/gemini-cli-core` keep working.
+- `Config.getEffectiveLocalConfig()` was renamed to
+  `getEffectiveProviderConfig()` and its return shape extended with `wireFormat`
+  and `authType`. The legacy-local fallback (no `providers.active` + non-empty
+  `local.url`) still returns `wireFormat: 'openai-chat'` +
+  `authType: AuthType.LOCAL` so pre-2.2 setups keep working byte-identically
+  until the migration runs.
+- `createContentGenerator()` dispatches on `eff.wireFormat`. For `'openai-chat'`
+  it uses the existing `OpenAICompatContentGenerator` (covers vLLM, Ollama,
+  OpenAI, Azure, Groq…). For `'gemini'` it falls through to the upstream Google
+  GenAI client paths, which then dispatch on the upstream `AuthType` switch
+  already in place. **No upstream Gemini code paths were touched.**
+- `Config.refreshAuth()` consults `getEffectiveProviderConfig().authType` so
+  `/provider use gemini-oauth` triggers `LOGIN_WITH_GOOGLE`,
+  `/provider use gemini-vertex` triggers `USE_VERTEX_AI`, etc., without manual
+  `/auth` invocation. `/auth` continues to work for re-auth and flips
+  `providers.active` to the matching `gemini-*` entry so the footer and stats
+  stay consistent.
+- `Config.isLocalMode()` is now `wireFormat`-aware: returns `true` only for
+  `openai-chat` providers (or the legacy-local fallback). This keeps every
+  `if (isLocalMode())` branch in the codebase (compression, loop detection, lite
+  system prompt, footer, `/local`-style hot-reload paths) off the upstream
+  Gemini path automatically.
+- `/local` slash command, `LocalDialog`, `useLocalCommand` hook,
+  `closeLocalDialog` action, and the `'local'` `DialogKind` literal are all
+  removed. The `local.*` block in `settingsSchema.ts` is **kept** but marked
+  `showInDialog: false` and deprecated, so existing settings files still parse
+  and the legacy fallback in `getEffectiveProviderConfig()` still has typed
+  access to those keys.
+- One-time migration (`packages/cli/src/config/migrateLegacyLocalSettings.ts`):
+  on startup, if `local.*` is non-empty and `providers.local-vllm.*` is empty,
+  the recognized keys (`url`, `model`, `contextLimit`, `timeout`, `promptMode`,
+  `enableTools`, `temperature`, `topP`, `topK`, `minP`, `repetitionPenalty`,
+  `toolCallParsing`, `apiKeyEnvVar`, `extraHeaders`) are moved to
+  `providers.local-vllm.*`. `providers.active` is set to `local-vllm` if unset.
+  `~/.gemini/settings.json.pre-2.2.bak` is written before the rewrite. The CLI
+  prints a one-line summary at startup listing migrated and dropped keys, and
+  never re-runs once the legacy block is empty.
+- Per-provider token tracking: `LoggingContentGenerator` stamps
+  `ApiResponseEvent` and `ApiErrorEvent` with `provider_id` derived from
+  `Config.getActiveProviderId()` / `isLocalMode()` /
+  `getContentGeneratorConfig().authType`. `UiTelemetryService` aggregates these
+  into `SessionMetrics.providers: Record<string, ProviderMetrics>` alongside the
+  existing per-model breakdown. `StatsDisplay` renders a new
+  `ProviderUsageTable` below `ModelUsageTable`.
+
+UI changes:
+
+- `UserIdentity.tsx` is `wireFormat`-aware: for `gemini` it shows model +
+  auth-method copy (OAuth / `$GEMINI_API_KEY` / Vertex project + location); for
+  `openai-chat` it shows URL / prompt mode / tool-call parser as before.
+- `ProviderDialog.tsx` only renders fields that appear in
+  `definition.validSettingKeys`, so `gemini-*` entries get a smaller sheet (no
+  `baseUrl`, no `toolCallParsing`, no `enableTools`). The status panel switches
+  `api key:` for `auth:` on `gemini` entries, and the model picker is disabled
+  for `gemini` entries (the user types the model name directly because the
+  upstream Gemini API does not expose a discovery endpoint compatible with
+  `/v1/models`).
+- `/provider list` groups providers into "Hosted (Gemini)", "Hosted
+  (OpenAI-compat)", and "Local presets" buckets, each with an active marker and
+  context-aware auth status (e.g. "via OAuth", "$GEMINI_API_KEY set", "needs
+  $OPENAI_API_KEY", "no auth required").
+
+Files touched (Phase 2.2 fences = `// --- LOCAL FORK ADDITION (Phase 2.2) ---`):
+
+- packages/core/src/core/authType.ts — NEW leaf module.
+- packages/core/src/core/contentGenerator.ts — re-exports `AuthType` from
+  `authType.ts`; `createContentGenerator` dispatches on `wireFormat`.
+- packages/core/src/providers/providerRegistry.ts — adds `wireFormat`,
+  `authType`, `validSettingKeys`; new `gemini-oauth`, `gemini-apikey`,
+  `gemini-vertex` entries.
+- packages/core/src/config/config.ts — `getEffectiveLocalConfig()` →
+  `getEffectiveProviderConfig()` with extended return shape; `refreshAuth()` and
+  `refreshProviderConfig()` consult `eff.authType`; `isLocalMode()` is
+  `wireFormat`-aware.
+- packages/core/src/config/getEffectiveProviderConfig.test.ts — NEW tests
+  covering Gemini entries, OpenAI-compat overrides, and the legacy fallback.
+- packages/core/src/core/loggingContentGenerator.ts — stamps `provider_id` on
+  every API event.
+- packages/core/src/telemetry/types.ts — `provider_id?: string` on
+  `ApiResponseEvent` / `ApiErrorEvent`.
+- packages/core/src/telemetry/uiTelemetry.ts — `ProviderMetrics` and
+  per-provider rollup in `SessionMetrics`.
+- packages/cli/src/config/migrateLegacyLocalSettings.ts — NEW one-shot migration
+  with backup, key allowlist, and dropped-key reporting.
+- packages/cli/src/config/migrateLegacyLocalSettings.test.ts — NEW tests for
+  migration scenarios and edge cases.
+- packages/cli/src/config/settings.ts — wires the migration into
+  `_doLoadSettings` with a backup write and user-visible feedback.
+- packages/cli/src/config/settingsSchema.ts — `local.*` block hidden + marked
+  deprecated.
+- packages/cli/src/services/BuiltinCommandLoader.ts — drops `localCommand`.
+- packages/cli/src/ui/AppContainer.tsx — drops `useLocalCommand` and
+  `closeLocalDialog`.
+- packages/cli/src/ui/commands/types.ts — removes `'local'` from `DialogKind`.
+- packages/cli/src/ui/commands/providerCommand.ts — `/provider list` buckets +
+  `renderAuthStatus()`; `/provider use` success message is provider-aware.
+- packages/cli/src/ui/commands/providerCommand.test.ts — bucket headers and
+  Gemini auth-method copy.
+- packages/cli/src/ui/components/DialogManager.tsx — removes `LocalDialog`.
+- packages/cli/src/ui/components/ProviderDialog.tsx — `validSettingKeys`-driven
+  field set; `wireFormat`-aware status panel and model picker.
+- packages/cli/src/ui/components/StatsDisplay.tsx — adds `ProviderUsageTable`.
+- packages/cli/src/ui/components/UserIdentity.tsx — `wireFormat`-aware
+  rendering.
+- packages/cli/src/ui/auth/useAuth.ts — auto-auth dispatch via
+  `getProvider(providerActive).authType`.
+- packages/cli/src/ui/contexts/{UIStateContext,UIActionsContext}.tsx — drops
+  local-dialog state/action.
+- packages/cli/src/ui/hooks/slashCommandProcessor.ts — drops `case 'local'`.
+
+Tests run green for Phase 2.2: 54 core tests (`providerRegistry.test.ts` +
+`getEffectiveProviderConfig.test.ts` + `uiTelemetry.test.ts`) and 44 CLI tests
+(`migrateLegacyLocalSettings.test.ts` + `providerCommand.test.ts` +
+`UserIdentity.test.tsx`). The pre-existing failures in `prompts.test.ts`,
+`prompts-substitution.test.ts`, `promptProvider.test.ts`,
+`sandboxManager.integration.test.ts`, `confirmation-policy.test.ts`, and
+`line-endings.test.ts` exist on `main` before this phase and are unrelated.
+
+Explicit non-goals carried forward:
+
+- Anthropic provider — `wireFormat: 'anthropic-messages'` is reserved but still
+  no adapter.
+- Masked-input dialog for `/provider set <id> key` — out of scope.
+- `embedContent()` on hosted/local providers — still throws; only Gemini paths
+  support it.
+- Per-provider _sampling defaults_ for Gemini — Phase 2.2 keeps Gemini sampling
+  pinned to upstream defaults; only OpenAI-compat providers expose
+  `temperature`, `topP`, etc., via `validSettingKeys`.
+
+DONE — Phase 2.3 Provider UX overhaul (shipped):
+
+Phase 2.2 unified the registry under `/provider` but left two awkward edges: (a)
+the registry hard-coded three `local-*` presets that were not materially
+different from "any OpenAI-compat URL the user could type", and (b) Gemini
+providers exposed empty `validSettingKeys: []` rows in the dialog, telling the
+user nothing was editable while still rendering an editable sheet. Phase 2.3
+cleans both up by treating local presets as **user data** instead of code, and
+by collapsing the dialog into an explicit screen-per-action menu where Gemini
+providers simply have no edit screen.
+
+Architecture:
+
+- `BUILT_IN_PROVIDERS` (was `PROVIDER_REGISTRY`) shrunk to four entries:
+  `gemini-oauth`, `gemini-apikey`, `gemini-vertex`, `openai`. The three
+  `local-*` presets are gone from the code; users register equivalents via
+  `/provider add` (or get them auto-promoted by the migration — see below).
+- `CustomProviderDefinition` (new shape) captures the fields a user supplies for
+  an OpenAI-compat provider: `displayName`, `baseUrl`, optional `defaultModel`,
+  `defaultContextLimit`, `apiKeyEnvVar`. It is intentionally a **subset** of
+  `ProviderDefinition`; `wireFormat`, `authType`, and `buildAuthHeaders` are
+  forced to `openai-chat` / `AuthType.LOCAL` / `bearerAuth | noAuth` by
+  `customToProviderDefinition()` so a custom entry can never request a Gemini
+  wire format.
+- `effectiveRegistry(custom)` returns built-ins merged with custom entries
+  (custom always wins on id collision, but `validateCustomProviderId` refuses
+  ids that match built-ins at write time). All callers of the old frozen
+  `PROVIDER_REGISTRY` — `getProvider`, `listProviderIds`, `mustGetProvider`,
+  `resolveProvider` — now take an optional `custom` map (`{}` for back-compat in
+  tests).
+- Gemini entries' `validSettingKeys` are `[]`. The settings sheet (`EditScreen`)
+  honours an explicit empty allowlist by rendering zero rows; in practice the
+  dialog never reaches `EditScreen` for Gemini because the menu hides "Edit
+  active provider" when `wireFormat === 'gemini'`.
+- `Config` gained `getCustomProviders()`, `addCustomProvider(id, def)`,
+  `removeCustomProvider(id)`, and `getProviderRegistry()` (returns the merged
+  effective registry for the current settings snapshot).
+  `getEffectiveProviderConfig` and `getActiveProviderResolved` resolve through
+  the merged registry, so `providers.active = "local-vllm"` resolves correctly
+  the moment `providers.custom["local-vllm"]` exists.
+- One-shot migration `migrateLegacyLocalPresets.ts` runs in the settings loader
+  after the Phase 2.2 `local.*` migration. For each id in
+  `['local-vllm', 'local-llamacpp', 'local-generic']` it promotes the legacy
+  built-in defaults (overlaid with any user overrides) into
+  `providers.custom.<id>` iff the user actually used that preset (active id
+  matches, or `providers.<id>.*` overrides exist) and a custom entry is not
+  already present. Idempotent; a backup is written to
+  `~/.gemini/settings.json.pre-2.3.bak`.
+- `ProviderDialog.tsx` is now a state machine over six screens (`menu`,
+  `switch`, `edit`, `add`, `remove`, `models`). The menu is the single entry
+  point — Switch and Add are always visible; Edit only appears for OpenAI-compat
+  providers (Gemini gets a one-line hint pointing at `/auth`); Remove greys out
+  when there are no custom providers; Browse models is unavailable on Gemini and
+  renders the upstream-defaults redirect message instead.
+- `/provider` slash command gained `add` and reworked `remove` (custom ids only
+  — refuses built-ins with a clear message). `/provider set` on a `gemini-*` id
+  returns a refusal explaining that Gemini providers follow upstream defaults;
+  users are pointed at `/auth` (for creds) or `/model` (for the model string).
+  `/provider list` flags custom entries with `[custom]`.
+
+Files touched (Phase 2.3 fences = `// --- LOCAL FORK ADDITION (Phase 2.3) ---`):
+
+- packages/core/src/providers/providerRegistry.ts — split into
+  `BUILT_IN_PROVIDERS` + `effectiveRegistry`; new `CustomProviderDefinition`,
+  `customToProviderDefinition`, `validateCustomProviderId`. Existing helpers
+  take an optional `custom` map.
+- packages/core/src/config/config.ts — `providersCustom` field +
+  `getCustomProviders` / `addCustomProvider` / `removeCustomProvider` /
+  `getProviderRegistry` accessors. Resolution methods pass the custom map
+  through to `resolveProvider`.
+- packages/cli/src/config/settingsSchema.ts — new `providers.custom` block
+  (`Record<string, CustomProviderDefinition>`, `showInDialog: false`,
+  `MergeStrategy.SHALLOW_MERGE`).
+- packages/cli/src/config/migrateLegacyLocalPresets.ts (new) +
+  packages/cli/src/config/settings.ts — wired into `_doLoadSettings` right after
+  Phase 2.2's `local.*` migration.
+- packages/cli/src/ui/commands/providerCommand.ts — `add` subcommand, reworked
+  `remove`, Gemini guards on `set`, `[custom]` tags in `list`.
+- packages/cli/src/ui/components/ProviderDialog.tsx — six-screen state machine;
+  `EditScreen` is the lifted-out Phase 2.1/2.2 settings sheet unchanged for
+  OpenAI-compat providers.
+- README.md — registry table, custom-provider quick-start, Phase 2.3 migration
+  notice, updated `/provider` reference.
+
+Tests run green for Phase 2.3:
+
+- packages/core/src/providers/providerRegistry.test.ts — 32 tests asserting
+  BUILT_IN_PROVIDERS has exactly 4 entries plus
+  `effectiveRegistry`/`customToProviderDefinition`/ `validateCustomProviderId`
+  coverage and Gemini's `validSettingKeys.length === 0` invariant.
+- packages/core/src/config/getEffectiveProviderConfig.test.ts — 15 tests
+  including `local-vllm` resolved as a custom provider, custom OpenAI-compat
+  with API-key env var, and the unknown-id case.
+- packages/cli/src/config/migrateLegacyLocalPresets.test.ts (new) — 11 tests
+  covering all three preset ids, idempotency, override preservation, and the
+  no-op short-circuit when the user never used the preset.
+- packages/cli/src/ui/commands/providerCommand.test.ts — 30 tests including
+  `add` happy/error paths, `remove` refusing built-ins, and `set` rejecting
+  `gemini-*`.
+- packages/cli/src/ui/components/ProviderDialog.test.tsx (new) — 9 tests
+  covering each screen render and the Esc-to-close path.
+
+Pre-existing failing tests on `main` (`prompts.test.ts`,
+`prompts-substitution.test.ts`, `promptProvider.test.ts`,
+`sandboxManager.integration.test.ts`, `confirmation-policy.test.ts`,
+`line-endings.test.ts`) are unchanged by this phase.
+
+Explicit non-goals carried forward to a later phase:
+
+- Custom Gemini-wireFormat providers — only OpenAI-compat custom entries are
+  supported. New Gemini auth flows still require a code change in
+  `BUILT_IN_PROVIDERS`.
+- Anthropic provider adapter — `wireFormat: 'anthropic-messages'` is reserved
+  but still no concrete adapter.
+- Masked-input dialog for `/provider add ... --env` (and
+  `/provider set ... key`) — same constraint as Phase 2.2; documented,
+  follow-up.
+- **Per-utility provider/model routing.** Today every utility role defined in
+  `packages/core/src/telemetry/llmRole.ts` (`utility_tool`,
+  `utility_compressor`, `utility_summarizer`, `utility_router`,
+  `utility_loop_detector`, `utility_next_speaker`, `utility_edit_corrector`,
+  `utility_autocomplete`, `utility_fast_ack_helper`,
+  `utility_state_snapshot_processor`) runs through whichever provider is
+  currently active. A future phase will let the user route any of these utility
+  roles to a different OpenAI / custom provider + model (e.g. always summarize
+  with `gpt-4o-mini` even when the main session is on `gpt-5`, or run the
+  compressor against a small local model). The new `effectiveRegistry()` merger
+  and the `getProviderRegistry()` / `getCustomProviders()` accessors are
+  deliberately easy to call from a future utility-router resolver — Phase 2.3
+  should not paint itself into a corner that would block this. Gemini providers
+  will be excluded from the utility-router UI for the same reason as the rest of
+  Phase 2.3 — Gemini uses upstream defaults.

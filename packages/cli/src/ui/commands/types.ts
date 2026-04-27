@@ -131,7 +131,10 @@ export interface OpenDialogActionReturn {
     | 'voice-model'
     | 'agentConfig'
     | 'permissions'
-    | 'local';
+    // --- LOCAL FORK ADDITION (Phase 2.2) ---
+    // `/local` dialog hard-removed; `/provider` is the canonical switcher.
+    | 'provider';
+  // --- END LOCAL FORK ADDITION ---
 }
 
 /**

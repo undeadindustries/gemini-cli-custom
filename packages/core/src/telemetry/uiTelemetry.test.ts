@@ -102,6 +102,9 @@ describe('UiTelemetryService', () => {
     const metrics = service.getMetrics();
     expect(metrics).toEqual({
       models: {},
+      // --- LOCAL FORK ADDITION (Phase 2.2) ---
+      providers: {},
+      // --- END LOCAL FORK ADDITION ---
       tools: {
         totalCalls: 0,
         totalSuccess: 0,
@@ -286,6 +289,130 @@ describe('UiTelemetryService', () => {
       expect(metrics.models['gemini-2.5-flash'].api.totalRequests).toBe(1);
       expect(service.getLastPromptTokenCount()).toBe(0);
     });
+
+    // --- LOCAL FORK ADDITION (Phase 2.2: per-provider bucketing) ---
+    it('aggregates per-provider rollups in metrics.providers, keyed by event.provider_id', () => {
+      // Two requests under gemini-oauth (one to flash, one to pro), one
+      // request under local-vllm. The bucketing must:
+      //   1. Sum tokens/requests per providerId.
+      //   2. Track which models got hit under each providerId.
+      //   3. Treat missing provider_id as 'unknown' (not crash).
+      const geminiOauthFlash = {
+        'event.name': EVENT_API_RESPONSE,
+        model: 'gemini-2.5-flash',
+        duration_ms: 500,
+        provider_id: 'gemini-oauth',
+        usage: {
+          input_token_count: 100,
+          output_token_count: 50,
+          total_token_count: 150,
+          cached_content_token_count: 10,
+          thoughts_token_count: 5,
+          tool_token_count: 0,
+        },
+      } as ApiResponseEvent & {
+        'event.name': typeof EVENT_API_RESPONSE;
+      };
+      const geminiOauthPro = {
+        'event.name': EVENT_API_RESPONSE,
+        model: 'gemini-2.5-pro',
+        duration_ms: 800,
+        provider_id: 'gemini-oauth',
+        usage: {
+          input_token_count: 200,
+          output_token_count: 100,
+          total_token_count: 300,
+          cached_content_token_count: 20,
+          thoughts_token_count: 10,
+          tool_token_count: 0,
+        },
+      } as ApiResponseEvent & {
+        'event.name': typeof EVENT_API_RESPONSE;
+      };
+      const localVllm = {
+        'event.name': EVENT_API_RESPONSE,
+        model: 'Qwen/Qwen3-Coder-Next-FP8',
+        duration_ms: 1200,
+        provider_id: 'local-vllm',
+        usage: {
+          input_token_count: 1000,
+          output_token_count: 500,
+          total_token_count: 1500,
+          cached_content_token_count: 0,
+          thoughts_token_count: 0,
+          tool_token_count: 0,
+        },
+      } as ApiResponseEvent & {
+        'event.name': typeof EVENT_API_RESPONSE;
+      };
+      const noProviderEvent = {
+        'event.name': EVENT_API_RESPONSE,
+        model: 'gemini-2.5-pro',
+        duration_ms: 100,
+        usage: {
+          input_token_count: 1,
+          output_token_count: 1,
+          total_token_count: 2,
+          cached_content_token_count: 0,
+          thoughts_token_count: 0,
+          tool_token_count: 0,
+        },
+      } as ApiResponseEvent & {
+        'event.name': typeof EVENT_API_RESPONSE;
+      };
+
+      service.addEvent(geminiOauthFlash);
+      service.addEvent(geminiOauthPro);
+      service.addEvent(localVllm);
+      service.addEvent(noProviderEvent);
+
+      const providers = service.getMetrics().providers!;
+      expect(Object.keys(providers).sort()).toEqual([
+        'gemini-oauth',
+        'local-vllm',
+        'unknown',
+      ]);
+
+      const oauth = providers['gemini-oauth'];
+      expect(oauth.api.totalRequests).toBe(2);
+      expect(oauth.api.totalLatencyMs).toBe(1300);
+      expect(oauth.tokens.prompt).toBe(300);
+      expect(oauth.tokens.candidates).toBe(150);
+      expect(oauth.tokens.total).toBe(450);
+      expect(oauth.tokens.cached).toBe(30);
+      expect(oauth.models.sort()).toEqual([
+        'gemini-2.5-flash',
+        'gemini-2.5-pro',
+      ]);
+
+      const local = providers['local-vllm'];
+      expect(local.api.totalRequests).toBe(1);
+      expect(local.tokens.prompt).toBe(1000);
+      expect(local.tokens.candidates).toBe(500);
+      expect(local.models).toEqual(['Qwen/Qwen3-Coder-Next-FP8']);
+
+      const unknown = providers['unknown'];
+      expect(unknown.api.totalRequests).toBe(1);
+      expect(unknown.tokens.total).toBe(2);
+    });
+
+    it('counts api errors against the same provider bucket as responses', () => {
+      const errorEvent = {
+        'event.name': EVENT_API_ERROR,
+        model: 'gpt-4o-mini',
+        duration_ms: 250,
+        error: 'rate limited',
+        provider_id: 'openai',
+      } as ApiErrorEvent & { 'event.name': typeof EVENT_API_ERROR };
+
+      service.addEvent(errorEvent);
+
+      const providers = service.getMetrics().providers!;
+      expect(providers['openai'].api.totalRequests).toBe(1);
+      expect(providers['openai'].api.totalErrors).toBe(1);
+      expect(providers['openai'].models).toEqual(['gpt-4o-mini']);
+    });
+    // --- END LOCAL FORK ADDITION ---
   });
 
   describe('API Error Event Processing', () => {

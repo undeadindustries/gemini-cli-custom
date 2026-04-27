@@ -14,6 +14,9 @@ import {
   type ModelMetrics,
   type RoleMetrics,
 } from '../contexts/SessionContext.js';
+// --- LOCAL FORK ADDITION (Phase 2.2: per-provider table) ---
+import type { ProviderMetrics } from '@google/gemini-cli-core';
+// --- END LOCAL FORK ADDITION ---
 import {
   getStatusColor,
   TOOL_SUCCESS_RATE_HIGH,
@@ -227,6 +230,108 @@ const ModelUsageTable: React.FC<ModelUsageTableProps> = ({ models }) => {
   );
 };
 
+// --- LOCAL FORK ADDITION (Phase 2.2: per-provider table) ---
+interface ProviderUsageTableProps {
+  providers: Record<string, ProviderMetrics>;
+}
+
+/**
+ * Renders a compact per-provider rollup. The model table above already
+ * breaks down by model; this table answers "where did this session's
+ * tokens actually go?" — useful when a user toggled between e.g.
+ * gemini-oauth and local-vllm mid-session.
+ */
+const ProviderUsageTable: React.FC<ProviderUsageTableProps> = ({
+  providers,
+}) => {
+  const nameWidth = 22;
+  const requestsWidth = 8;
+  const tokensWidth = 14;
+  const modelsWidth = 32;
+
+  const rows = Object.entries(providers)
+    .filter(([, m]) => m.api.totalRequests > 0)
+    .sort(([, a], [, b]) => b.tokens.total - a.tokens.total);
+
+  if (rows.length === 0) return null;
+
+  return (
+    <Box flexDirection="column" marginTop={1}>
+      <Text bold color={theme.text.primary}>
+        Provider Usage
+      </Text>
+      <Text color={theme.text.secondary}>
+        Per-provider rollup (Phase 2.2). Use /provider list to switch.
+      </Text>
+      <Box height={1} />
+
+      <Box
+        borderBottom={true}
+        borderStyle="single"
+        borderColor={theme.border.default}
+        borderTop={false}
+        borderLeft={false}
+        borderRight={false}
+      >
+        <Box width={nameWidth}>
+          <Text bold color={theme.text.secondary}>
+            Provider
+          </Text>
+        </Box>
+        <Box width={requestsWidth} justifyContent="flex-end">
+          <Text bold color={theme.text.secondary}>
+            Reqs
+          </Text>
+        </Box>
+        <Box width={tokensWidth} justifyContent="flex-end">
+          <Text bold color={theme.text.secondary}>
+            Input Tokens
+          </Text>
+        </Box>
+        <Box width={tokensWidth} justifyContent="flex-end">
+          <Text bold color={theme.text.secondary}>
+            Output Tokens
+          </Text>
+        </Box>
+        <Box width={modelsWidth}>
+          <Text bold color={theme.text.secondary}>
+            {'  Models'}
+          </Text>
+        </Box>
+      </Box>
+
+      {rows.map(([id, m]) => (
+        <Box key={id}>
+          <Box width={nameWidth}>
+            <Text color={theme.text.primary} wrap="truncate-end">
+              {id}
+            </Text>
+          </Box>
+          <Box width={requestsWidth} justifyContent="flex-end">
+            <Text color={theme.text.primary}>{m.api.totalRequests}</Text>
+          </Box>
+          <Box width={tokensWidth} justifyContent="flex-end">
+            <Text color={theme.text.primary}>
+              {m.tokens.prompt.toLocaleString()}
+            </Text>
+          </Box>
+          <Box width={tokensWidth} justifyContent="flex-end">
+            <Text color={theme.text.primary}>
+              {m.tokens.candidates.toLocaleString()}
+            </Text>
+          </Box>
+          <Box width={modelsWidth}>
+            <Text color={theme.text.secondary} wrap="truncate-end">
+              {'  ' + (m.models.length > 0 ? m.models.join(', ') : '—')}
+            </Text>
+          </Box>
+        </Box>
+      ))}
+    </Box>
+  );
+};
+// --- END LOCAL FORK ADDITION ---
+
 interface StatsDisplayProps {
   duration: string;
   title?: string;
@@ -394,6 +499,12 @@ export const StatsDisplay: React.FC<StatsDisplayProps> = ({
       </Section>
 
       {Object.keys(models).length > 0 && <ModelUsageTable models={models} />}
+
+      {/* --- LOCAL FORK ADDITION (Phase 2.2: per-provider table) --- */}
+      {metrics.providers && Object.keys(metrics.providers).length > 0 && (
+        <ProviderUsageTable providers={metrics.providers} />
+      )}
+      {/* --- END LOCAL FORK ADDITION --- */}
 
       {renderFooter()}
     </Box>

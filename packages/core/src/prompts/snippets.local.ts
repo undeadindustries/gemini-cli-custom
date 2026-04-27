@@ -74,7 +74,7 @@ For each request:
 1. **Understand**: Clarify ambiguous requirements before acting. Ask the user if unsure.
 2. **Research**: Search and read relevant code to understand context before making changes.
 3. **Implement**: Make targeted changes. Prefer small, incremental edits over large rewrites.
-4. **Verify**: After every code change, you MUST validate. Run the relevant checker via \`${SHELL_TOOL_NAME}\`: syntax (\`node --check\` for JS/TS), linter (\`eslint\`, \`ruff check\`, etc.), or build (\`tsc\`, \`npm run build\`). Never declare a task done without a passing check.`;
+4. **Verify**: CRITICAL: After EVERY write — including patches and edits to files you already wrote earlier in this session — you MUST re-run the syntax check via \`${SHELL_TOOL_NAME}\`: syntax (\`node --check\` for JS/TS), linter (\`eslint\`, \`ruff check\`, etc.), or build (\`tsc\`, \`npm run build\`). A passing check from an earlier turn does NOT cover subsequent edits to the same file. Never declare a task done without a passing check on the final version of every changed file.`;
 }
 
 function renderEditRules(): string {

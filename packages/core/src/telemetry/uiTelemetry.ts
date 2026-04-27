@@ -69,8 +69,46 @@ export interface ModelMetrics {
   roles: Partial<Record<LlmRole, RoleMetrics>>;
 }
 
+// --- LOCAL FORK ADDITION (Phase 2.2) ---
+/**
+ * Per-provider rollup. Same shape as ModelMetrics minus the per-role
+ * breakdown (a single provider routes through one auth path; the role
+ * dimension lives on the model bucket).
+ */
+export interface ProviderMetrics {
+  api: {
+    totalRequests: number;
+    totalErrors: number;
+    totalLatencyMs: number;
+  };
+  tokens: {
+    input: number;
+    prompt: number;
+    candidates: number;
+    total: number;
+    cached: number;
+    thoughts: number;
+    tool: number;
+  };
+  /**
+   * Models actually exercised under this provider, useful for showing e.g.
+   * "openai → gpt-5.5-medium 12k tokens; gpt-4o-mini 3k tokens".
+   */
+  models: string[];
+}
+// --- END LOCAL FORK ADDITION ---
+
 export interface SessionMetrics {
   models: Record<string, ModelMetrics>;
+  // --- LOCAL FORK ADDITION (Phase 2.2) ---
+  /**
+   * Per-provider token rollup keyed by `providers.active` at request time.
+   * 'unknown' is used when no provider id was stamped (legacy events,
+   * pre-2.2 sessions). Optional so persisted snapshots from older builds
+   * deserialize cleanly; UiTelemetryService back-fills it on first event.
+   */
+  providers?: Record<string, ProviderMetrics>;
+  // --- END LOCAL FORK ADDITION ---
   tools: {
     totalCalls: number;
     totalSuccess: number;
@@ -123,8 +161,31 @@ const createInitialModelMetrics = (): ModelMetrics => ({
   roles: {},
 });
 
+// --- LOCAL FORK ADDITION (Phase 2.2) ---
+const createInitialProviderMetrics = (): ProviderMetrics => ({
+  api: {
+    totalRequests: 0,
+    totalErrors: 0,
+    totalLatencyMs: 0,
+  },
+  tokens: {
+    input: 0,
+    prompt: 0,
+    candidates: 0,
+    total: 0,
+    cached: 0,
+    thoughts: 0,
+    tool: 0,
+  },
+  models: [],
+});
+// --- END LOCAL FORK ADDITION ---
+
 const createInitialMetrics = (): SessionMetrics => ({
   models: {},
+  // --- LOCAL FORK ADDITION (Phase 2.2) ---
+  providers: {},
+  // --- END LOCAL FORK ADDITION ---
   tools: {
     totalCalls: 0,
     totalSuccess: 0,
@@ -283,6 +344,24 @@ export class UiTelemetryService extends EventEmitter {
     return this.#metrics.models[modelName];
   }
 
+  // --- LOCAL FORK ADDITION (Phase 2.2) ---
+  /**
+   * Returns the per-provider rollup, lazily creating it on first sight.
+   * Pre-2.2 sessions deserialize without a `providers` block; we backfill
+   * once per session here rather than at construction so old persisted
+   * snapshots stay compatible.
+   */
+  private getOrCreateProviderMetrics(providerId: string): ProviderMetrics {
+    if (!this.#metrics.providers) {
+      this.#metrics.providers = {};
+    }
+    if (!this.#metrics.providers[providerId]) {
+      this.#metrics.providers[providerId] = createInitialProviderMetrics();
+    }
+    return this.#metrics.providers[providerId];
+  }
+  // --- END LOCAL FORK ADDITION ---
+
   private processApiResponse(event: ApiResponseEvent) {
     const modelMetrics = this.getOrCreateModelMetrics(event.model);
 
@@ -299,6 +378,26 @@ export class UiTelemetryService extends EventEmitter {
       0,
       modelMetrics.tokens.prompt - modelMetrics.tokens.cached,
     );
+
+    // --- LOCAL FORK ADDITION (Phase 2.2: per-provider rollup) ---
+    const providerId = event.provider_id || 'unknown';
+    const provMetrics = this.getOrCreateProviderMetrics(providerId);
+    provMetrics.api.totalRequests++;
+    provMetrics.api.totalLatencyMs += event.duration_ms;
+    provMetrics.tokens.prompt += event.usage.input_token_count;
+    provMetrics.tokens.candidates += event.usage.output_token_count;
+    provMetrics.tokens.total += event.usage.total_token_count;
+    provMetrics.tokens.cached += event.usage.cached_content_token_count;
+    provMetrics.tokens.thoughts += event.usage.thoughts_token_count;
+    provMetrics.tokens.tool += event.usage.tool_token_count;
+    provMetrics.tokens.input = Math.max(
+      0,
+      provMetrics.tokens.prompt - provMetrics.tokens.cached,
+    );
+    if (event.model && !provMetrics.models.includes(event.model)) {
+      provMetrics.models.push(event.model);
+    }
+    // --- END LOCAL FORK ADDITION ---
 
     if (event.role) {
       if (!modelMetrics.roles[event.role]) {
@@ -325,6 +424,17 @@ export class UiTelemetryService extends EventEmitter {
     modelMetrics.api.totalRequests++;
     modelMetrics.api.totalErrors++;
     modelMetrics.api.totalLatencyMs += event.duration_ms;
+
+    // --- LOCAL FORK ADDITION (Phase 2.2: per-provider error rollup) ---
+    const providerId = event.provider_id || 'unknown';
+    const provMetrics = this.getOrCreateProviderMetrics(providerId);
+    provMetrics.api.totalRequests++;
+    provMetrics.api.totalErrors++;
+    provMetrics.api.totalLatencyMs += event.duration_ms;
+    if (event.model && !provMetrics.models.includes(event.model)) {
+      provMetrics.models.push(event.model);
+    }
+    // --- END LOCAL FORK ADDITION ---
 
     if (event.role) {
       if (!modelMetrics.roles[event.role]) {

@@ -39,22 +39,18 @@ export const UserIdentity: React.FC<UserIdentityProps> = ({ config }) => {
 
   const isUltra = useMemo(() => isUltraTier(tierName), [tierName]);
 
-  // --- LOCAL FORK ADDITION ---
-  // When running in local mode, surface the live local-server settings
-  // directly under the auth identity row so users can see at a glance which
-  // endpoint and model they're talking to. Reads through Config getters so
-  // the values stay in sync with hot-reloaded settings (Phase 2.0.2).
-  const localInfo = useMemo(() => {
-    if (authType !== AuthType.LOCAL) return undefined;
-    return {
-      url: config.getLocalUrl?.() ?? '',
-      model: config.getLocalModel?.() ?? '',
-      contextLimit: config.getLocalContextLimit?.() ?? 0,
-      promptMode: config.getLocalPromptMode?.() ?? 'lite',
-      // --- LOCAL FORK ADDITION (Phase 2.0.12) ---
-      parserMode: config.getLocalToolCallParseMode?.() ?? 'lenient',
-      // --- END LOCAL FORK ADDITION ---
-    };
+  // --- LOCAL FORK ADDITION (Phase 2.2: unified provider block) ---
+  // ONE block surfaces the active provider entry (local, hosted, or
+  // Gemini). getEffectiveProviderConfig() returns a unified shape; the
+  // wireFormat field drives whether this renders URL/parser fields
+  // (OpenAI-compat) or just model + auth-method (Gemini).
+  const effective = useMemo(() => {
+    // authType is read here (not just listed in deps) because /auth
+    // switches mutate the underlying Config in place without changing
+    // its reference; the dep keeps this memo in sync with the active
+    // provider whenever the user re-authenticates.
+    void authType;
+    return config.getEffectiveProviderConfig?.();
   }, [config, authType]);
   // --- END LOCAL FORK ADDITION ---
 
@@ -79,25 +75,70 @@ export const UserIdentity: React.FC<UserIdentityProps> = ({ config }) => {
         <Text color={theme.text.secondary}> /auth</Text>
       </Box>
 
-      {/* --- LOCAL FORK ADDITION --- */}
-      {localInfo && (
+      {/* --- LOCAL FORK ADDITION (Phase 2.2: wireFormat-aware identity block) --- */}
+      {/*
+        OpenAI-compat (local-vllm, openai, ...) → URL + parser + prompt
+                                                  mode + API-key row.
+        Gemini (gemini-oauth / gemini-apikey / gemini-vertex) → just
+                                                  model + auth-method row,
+                                                  since the upstream SDK
+                                                  owns the wire and our
+                                                  parserMode / promptMode
+                                                  knobs don't apply.
+      */}
+      {effective && (
         <Box flexDirection="column" marginLeft={2}>
           <Text color={theme.text.secondary} wrap="truncate-end">
-            URL: {localInfo.url || '(not set)'}
+            {'Active: ' +
+              effective.displayName +
+              (effective.providerId ? ' (' + effective.providerId + ')' : '')}
           </Text>
           <Text color={theme.text.secondary} wrap="truncate-end">
-            Model: {localInfo.model || '(not set)'}
+            {'Model: ' + (effective.model || '(not set)')}
           </Text>
           <Text color={theme.text.secondary} wrap="truncate-end">
-            Context: {localInfo.contextLimit.toLocaleString()} tokens Prompt:{' '}
-            {localInfo.promptMode}
+            {'Context: ' + effective.contextLimit.toLocaleString() + ' tokens'}
           </Text>
-          {/* --- LOCAL FORK ADDITION (Phase 2.0.12) --- */}
-          <Text color={theme.text.secondary} wrap="truncate-end">
-            Parser: {localInfo.parserMode}
-          </Text>
-          {/* --- END LOCAL FORK ADDITION --- */}
-          <Text color={theme.text.secondary}> /local</Text>
+          {effective.wireFormat === 'openai-chat' ? (
+            <>
+              <Text color={theme.text.secondary} wrap="truncate-end">
+                {'URL: ' + (effective.url || '(not set)')}
+              </Text>
+              <Text color={theme.text.secondary} wrap="truncate-end">
+                {'Prompt: ' +
+                  effective.promptMode +
+                  '   Parser: ' +
+                  effective.parserMode}
+              </Text>
+              {effective.requiresApiKey && (
+                <Text color={theme.text.secondary} wrap="truncate-end">
+                  {'API key: from ' +
+                    (effective.apiKeyEnvVar
+                      ? '$' + effective.apiKeyEnvVar + ' or keychain'
+                      : 'keychain')}
+                </Text>
+              )}
+            </>
+          ) : (
+            // wireFormat === 'gemini' — render the auth method instead
+            // of URL / parser fields. The upstream SDK owns the wire.
+            <Text color={theme.text.secondary} wrap="truncate-end">
+              {'Auth: ' +
+                (effective.authType === AuthType.LOGIN_WITH_GOOGLE
+                  ? 'OAuth (run /auth to switch account)'
+                  : effective.authType === AuthType.USE_GEMINI
+                    ? '$' +
+                      (effective.apiKeyEnvVar || 'GEMINI_API_KEY') +
+                      (effective.apiKeyEnvVar &&
+                      process.env[effective.apiKeyEnvVar]
+                        ? ' (set)'
+                        : ' (not set — run /auth)')
+                    : effective.authType === AuthType.USE_VERTEX_AI
+                      ? 'Vertex AI / ADC (run /auth to configure)'
+                      : String(effective.authType))}
+            </Text>
+          )}
+          <Text color={theme.text.secondary}> /provider</Text>
         </Box>
       )}
       {/* --- END LOCAL FORK ADDITION --- */}

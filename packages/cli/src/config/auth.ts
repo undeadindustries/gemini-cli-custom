@@ -16,6 +16,12 @@ export function validateAuthMethod(authMethod: string): string | null {
     return null;
   }
 
+  // --- LOCAL FORK ADDITION (Phase 2.1.1) ---
+  // AuthType.LOCAL covers BOTH localhost OpenAI-compat servers AND hosted
+  // OpenAI-compat providers (OpenAI etc.). API-key validation for the
+  // hosted case happens later in createContentGenerator (it surfaces an
+  // actionable error if no key is configured).
+  // --- END LOCAL FORK ADDITION ---
   if (authMethod === AuthType.LOCAL) {
     return null;
   }

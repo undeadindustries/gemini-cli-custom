@@ -503,6 +503,13 @@ export class ApiErrorEvent implements BaseTelemetryEvent {
   duration_ms: number;
   auth_type?: string;
   role?: LlmRole;
+  // --- LOCAL FORK ADDITION (Phase 2.2) ---
+  // Active provider id at the moment this event was created (e.g.
+  // 'openai', 'gemini-oauth', 'local-vllm'). Optional so existing
+  // callers and historical events without the stamp keep working;
+  // UiTelemetryService treats absence as 'unknown'.
+  provider_id?: string;
+  // --- END LOCAL FORK ADDITION ---
 
   constructor(
     model: string,
@@ -513,11 +520,13 @@ export class ApiErrorEvent implements BaseTelemetryEvent {
     error_type?: string,
     status_code?: number | string,
     role?: LlmRole,
+    provider_id?: string,
   ) {
     this['event.name'] = 'api_error';
     this['event.timestamp'] = new Date().toISOString();
     this.model = model;
     this.error = error;
+    this.provider_id = provider_id;
     this.error_type = error_type;
     this.status_code = status_code;
     this.duration_ms = duration_ms;
@@ -664,6 +673,11 @@ export class ApiResponseEvent implements BaseTelemetryEvent {
   usage: GenAIUsageDetails;
   finish_reasons: OTelFinishReason[];
   role?: LlmRole;
+  // --- LOCAL FORK ADDITION (Phase 2.2) ---
+  // Active provider id at the moment this event was created. Mirrors
+  // ApiErrorEvent.provider_id; see that field's comment for rationale.
+  provider_id?: string;
+  // --- END LOCAL FORK ADDITION ---
 
   constructor(
     model: string,
@@ -674,6 +688,7 @@ export class ApiResponseEvent implements BaseTelemetryEvent {
     usage_data?: GenerateContentResponseUsageMetadata,
     response_text?: string,
     role?: LlmRole,
+    provider_id?: string,
   ) {
     this['event.name'] = 'api_response';
     this['event.timestamp'] = new Date().toISOString();
@@ -695,6 +710,7 @@ export class ApiResponseEvent implements BaseTelemetryEvent {
     };
     this.finish_reasons = toFinishReasons(this.response.candidates);
     this.role = role;
+    this.provider_id = provider_id;
   }
 
   toLogRecord(config: Config): LogRecord {

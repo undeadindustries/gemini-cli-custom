@@ -41,7 +41,11 @@ import { rewindCommand } from '../ui/commands/rewindCommand.js';
 import { hooksCommand } from '../ui/commands/hooksCommand.js';
 import { ideCommand } from '../ui/commands/ideCommand.js';
 import { initCommand } from '../ui/commands/initCommand.js';
-import { localCommand } from '../ui/commands/localCommand.js';
+// --- LOCAL FORK ADDITION (Phase 2.2) ---
+// `/local` was hard-removed in Phase 2.2; `/provider` is the canonical
+// switcher across every backend (local-vllm, openai, gemini-*, ...).
+import { providerCommand } from '../ui/commands/providerCommand.js';
+// --- END LOCAL FORK ADDITION ---
 import { mcpCommand } from '../ui/commands/mcpCommand.js';
 import { memoryCommand } from '../ui/commands/memoryCommand.js';
 import { modelCommand } from '../ui/commands/modelCommand.js';
@@ -169,7 +173,9 @@ export class BuiltinCommandLoader implements ICommandLoader {
       await ideCommand(),
       initCommand,
       ...(isNightlyBuild ? [oncallCommand] : []),
-      localCommand,
+      // --- LOCAL FORK ADDITION (Phase 2.2) ---
+      providerCommand,
+      // --- END LOCAL FORK ADDITION ---
       ...(this.config?.getMcpEnabled() === false
         ? [
             {
