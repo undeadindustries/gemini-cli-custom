@@ -47,6 +47,51 @@ function clearFlattenedSchema() {
   _FLATTENED_SCHEMA = undefined;
 }
 
+// --- LOCAL FORK ADDITION (Phase 2.3 custom-provider schema aliases) ---
+/**
+ * Phase 2.3 — register `providers.<customId>.*` aliases in the flattened
+ * schema cache, cloned from `providers.openai.*`. Custom providers are
+ * always OpenAI-compat by definition (see `customToProviderDefinition`),
+ * so they share the exact same set of editable settings as the built-in
+ * OpenAI entry; the only thing that changes is the storage prefix.
+ *
+ * Without this aliasing, the settings dialog (and anything else that
+ * looks up metadata via `getSettingDefinition`) would return undefined
+ * for keys like `providers.local-vllm.model`, leaving the user with a
+ * "No matches found" sheet even though the underlying values are valid.
+ *
+ * Idempotent: never overwrites an existing alias, so it is safe to call
+ * on every dialog mount, after `/provider add`, or after settings load.
+ * The function exists ONLY for the local fork — upstream gemini-cli has
+ * no equivalent concept of user-defined OpenAI-compat providers.
+ *
+ * Built-in ids (`openai`, `gemini-*`) are skipped — they either already
+ * have schema entries (openai) or intentionally expose no editable
+ * settings (gemini-*).
+ */
+export function registerCustomProviderSchemaAliases(
+  customIds: readonly string[],
+): void {
+  const schema = getFlattenedSchema();
+  const sourcePrefix = 'providers.openai.';
+  const sourceKeys = Object.keys(schema).filter((k) =>
+    k.startsWith(sourcePrefix),
+  );
+  if (sourceKeys.length === 0) return;
+  for (const id of customIds) {
+    if (!id) continue;
+    if (id === 'openai') continue;
+    if (id.startsWith('gemini-')) continue;
+    const targetPrefix = `providers.${id}.`;
+    for (const sourceKey of sourceKeys) {
+      const aliasKey = targetPrefix + sourceKey.slice(sourcePrefix.length);
+      if (aliasKey in schema) continue;
+      schema[aliasKey] = { ...schema[sourceKey], key: aliasKey };
+    }
+  }
+}
+// --- END LOCAL FORK ADDITION ---
+
 export function getSettingsByCategory(): Record<
   string,
   Array<SettingDefinition & { key: string }>
