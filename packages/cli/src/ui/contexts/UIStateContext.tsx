@@ -115,7 +115,6 @@ export interface UIState {
   isSessionBrowserOpen: boolean;
   isModelDialogOpen: boolean;
   isVoiceModelDialogOpen: boolean;
-  isLocalDialogOpen: boolean;
   // --- LOCAL FORK ADDITION (Phase 2.2) ---
   isProviderDialogOpen: boolean;
   // --- END LOCAL FORK ADDITION ---

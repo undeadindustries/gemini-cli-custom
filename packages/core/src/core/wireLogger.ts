@@ -169,7 +169,8 @@ export function logWire(ev: WireEvent): void {
   if (!s) return;
   try {
     const ts = new Date().toISOString();
-    const sanitized: Record<string, unknown> = Object.assign({ ts }, ev);
+    const sanitized: Record<string, unknown> = {};
+    Object.assign(sanitized, { ts }, ev);
     if ('headers' in ev && ev.headers) {
       sanitized['headers'] = redactHeaders(ev.headers);
     }

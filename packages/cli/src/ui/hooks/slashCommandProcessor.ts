@@ -73,7 +73,6 @@ interface SlashCommandProcessorActions {
   openSessionBrowser: () => void;
   openModelDialog: () => void;
   openVoiceModelDialog: () => void;
-  openLocalDialog: () => void;
   // --- LOCAL FORK ADDITION (Phase 2.2) ---
   openProviderDialog: () => void;
   // --- END LOCAL FORK ADDITION ---
@@ -513,8 +512,6 @@ export const useSlashCommandProcessor = (
                     case 'voice-model':
                       actions.openVoiceModelDialog();
                       return { type: 'handled' };
-                    case 'local':
-                      actions.openLocalDialog();
                     // --- LOCAL FORK ADDITION (Phase 2.2) ---
                     case 'provider':
                       actions.openProviderDialog();

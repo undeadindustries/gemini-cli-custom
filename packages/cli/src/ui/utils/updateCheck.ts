@@ -7,8 +7,6 @@
 import semver from 'semver';
 import {
   debugLogger,
-  getChannelFromVersion,
-  RELEASE_CHANNEL_STABILITY,
   LOCAL_CLI_NAME,
   LOCAL_CLI_VERSION,
   LOCAL_CLI_REPO,

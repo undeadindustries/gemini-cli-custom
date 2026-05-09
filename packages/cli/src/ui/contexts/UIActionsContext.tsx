@@ -43,7 +43,6 @@ export interface UIActions {
   closeModelDialog: () => void;
   openVoiceModelDialog: () => void;
   closeVoiceModelDialog: () => void;
-  closeLocalDialog: () => void;
   // --- LOCAL FORK ADDITION (Phase 2.2) ---
   openProviderDialog: () => void;
   closeProviderDialog: () => void;

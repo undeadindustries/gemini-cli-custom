@@ -206,7 +206,6 @@ describe('useSlashCommandProcessor', () => {
             openSessionBrowser: vi.fn(),
             openModelDialog: mockOpenModelDialog,
             openVoiceModelDialog: vi.fn(),
-            openLocalDialog: vi.fn(),
             // --- LOCAL FORK ADDITION (Phase 2.2) ---
             openProviderDialog: vi.fn(),
             // --- END LOCAL FORK ADDITION ---

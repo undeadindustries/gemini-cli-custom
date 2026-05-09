@@ -554,7 +554,6 @@ const mockUIActions: UIActions = {
   closeModelDialog: vi.fn(),
   openVoiceModelDialog: vi.fn(),
   closeVoiceModelDialog: vi.fn(),
-  closeLocalDialog: vi.fn(),
   // --- LOCAL FORK ADDITION (Phase 2.2) ---
   openProviderDialog: vi.fn(),
   closeProviderDialog: vi.fn(),
