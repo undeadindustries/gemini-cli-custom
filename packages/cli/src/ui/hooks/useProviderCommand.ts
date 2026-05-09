@@ -13,7 +13,7 @@ interface UseProviderCommandReturn {
 }
 
 /**
- * Drives the `/provider` dialog open/close state. Mirrors `useLocalCommand`.
+ * Drives the `/provider` dialog open/close state.
  * Brand-new file (Category C) — no rebase fences required.
  */
 export const useProviderCommand = (): UseProviderCommandReturn => {

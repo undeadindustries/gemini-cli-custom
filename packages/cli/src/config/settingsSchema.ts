@@ -4010,6 +4010,47 @@ export const SETTINGS_SCHEMA_DEFINITIONS: Record<
       },
     },
   },
+  // --- LOCAL FORK ADDITION (Phase 2.3) ---
+  CustomProviderDefinition: {
+    type: 'object',
+    description:
+      'User-defined OpenAI-compatible provider entry under providers.custom.<id>. API keys are stored in the OS keychain, not in this object.',
+    additionalProperties: false,
+    properties: {
+      displayName: {
+        type: 'string',
+        description: 'Display label shown in /provider list and the dialog.',
+      },
+      baseUrl: {
+        type: 'string',
+        description:
+          'Required base URL (full path to /v1/chat/completions or /v1/responses is fine).',
+      },
+      defaultModel: {
+        type: 'string',
+        description:
+          'Optional default model id. Empty string is allowed when the server picks the model.',
+      },
+      defaultContextLimit: {
+        type: 'number',
+        description:
+          'Optional default context window in tokens (default 32768).',
+      },
+      apiKeyEnvVar: {
+        type: 'string',
+        description:
+          'Optional environment variable name for the API key. Empty/omitted means unauthenticated.',
+      },
+      wireFormat: {
+        type: 'string',
+        enum: ['openai-chat', 'openai-responses'],
+        description:
+          'Wire format spoken by this endpoint. Defaults to openai-chat.',
+      },
+    },
+    required: ['displayName', 'baseUrl'],
+  },
+  // --- END LOCAL FORK ADDITION ---
   AgentOverride: {
     type: 'object',
     description: 'Override settings for a specific agent.',

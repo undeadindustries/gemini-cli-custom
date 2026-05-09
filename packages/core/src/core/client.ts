@@ -700,8 +700,8 @@ export class GeminiClient {
       // loop seen on small (32K) windows when a single tool output spike
       // pushes the next turn straight back over budget.
       if (
-        this.config.isLocalMode() &&
-        this.config.getLocalPreTurnBudgetEnabled()
+        this.config.isLocalMode?.() &&
+        this.config.getLocalPreTurnBudgetEnabled?.()
       ) {
         try {
           const requestParts: Part[] = Array.isArray(request)
@@ -746,7 +746,7 @@ export class GeminiClient {
       }
     }
 
-    const effectiveTokenLimit = this.config.isLocalMode()
+    const effectiveTokenLimit = this.config.isLocalMode?.()
       ? this.config.getLocalContextLimit()
       : tokenLimit(modelForLimitCheck);
     let remainingTokenCount =
@@ -760,8 +760,8 @@ export class GeminiClient {
     // file remains on disk and the model can re-read it. This is the biggest
     // single-turn win for code-generation sessions on small local windows.
     if (
-      this.config.isLocalMode() &&
-      this.config.getLocalWriteFileEjectionEnabled()
+      this.config.isLocalMode?.() &&
+      this.config.getLocalWriteFileEjectionEnabled?.()
     ) {
       try {
         const result = ejectStaleWriteFileContent(this.getHistory(), {
@@ -808,7 +808,7 @@ export class GeminiClient {
     // status='failed' and the existing guard below handles it.
     if (
       estimatedRequestTokenCount > remainingTokenCount &&
-      this.config.isLocalMode()
+      this.config.isLocalMode?.()
     ) {
       const recovery = await attemptLocalContextRecovery({
         config: this.config,

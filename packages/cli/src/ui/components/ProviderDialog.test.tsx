@@ -178,7 +178,7 @@ describe('<ProviderDialog /> screens', () => {
     unmount();
   });
 
-  it('add screen renders all five fields and the help text', async () => {
+  it('add screen renders all seven fields and the help text', async () => {
     const settings = createMockSettings();
     const config = makeFakeConfig();
     setActive(config, 'openai');
@@ -208,7 +208,9 @@ describe('<ProviderDialog /> screens', () => {
     expect(frame).toContain('Display name');
     expect(frame).toContain('Base URL');
     expect(frame).toContain('Default model');
-    expect(frame).toContain('API key env var');
+    expect(frame).toContain('Env var name for API key');
+    expect(frame).toContain('API key');
+    expect(frame).toContain('Wire format');
     unmount();
   });
 

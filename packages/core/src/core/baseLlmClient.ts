@@ -330,8 +330,8 @@ export class BaseLlmClient {
     //     is safe for bare vLLM/Ollama where the single loaded weight
     //     is chosen by the server and any model string is ignored.
     let overrideModel: string | undefined;
-    if (this.config.isLocalMode()) {
-      overrideModel = this.config.getLocalModel();
+    if (this.config.isLocalMode?.()) {
+      overrideModel = this.config.getLocalModel?.();
     }
 
     const {

@@ -2039,7 +2039,11 @@ level; default empty string semantically matches "no override").
 
 ---
 
-CURRENT STATUS (as of Phase 2.4):
+CURRENT STATUS (as of Phase 2.5 — rebased onto upstream/main):
+
+Upstream baseline: `0.42.0-nightly.20260428.g59b2dea0e`
+(rebased 2026-05-09; 195 upstream commits absorbed since previous baseline `d1c91f526`).
+
 
 The CLI is a fully functional Gemini CLI fork that supports:
 
@@ -2163,6 +2167,103 @@ OPEN TODOS (ordered by priority):
 
 10. **`embedContent()` on OpenAI-compat providers.** Currently throws; only Gemini
     paths support it.
+
+---
+
+PHASE 2.5 (rebase onto upstream/main, 2026-05-09):
+
+Rebased 5 fork commits (Phases 2.0 through 2.3.2) onto a 195-commit-newer
+upstream `main`. Key learnings for the next rebaser:
+
+**Conflict surface:**
+
+- Commit 1 (`feat: local LLM routing layer`): 9 files conflicted. Pattern was
+  consistent — upstream added `isVoiceModelDialogOpen` / `openVoiceModelDialog`
+  everywhere we had added `isLocalDialogOpen` / `openLocalDialog`. Resolution:
+  keep both halves at conflict time, then strip the `local` half during
+  post-rebase cleanup (Phase 2.2 superseded `/local` with `/provider`, so
+  the local-dialog hooks were already orphaned).
+- Commit 2 (`before v1/responses`): same 9 UI files re-conflicted with the
+  same pattern (Python bulk-resolver used to keep both sides). Plus:
+  - `packages/cli/src/config/settings.ts` — upstream renamed the second
+    field of `load()` return from implicit to explicit `rawSettings`. Our
+    `applyLegacyLocalMigration` / `applyLegacyLocalPresetMigration` helpers
+    needed their return type extended to include `rawSettings`.
+  - `packages/cli/src/ui/utils/updateCheck.ts` — upstream added channel
+    stability gating around the npm `latestVersion()` path. We replaced
+    the entire npm-check block with a single
+    `return await checkLocalForkUpdate();` because this fork only ships via
+    GitHub releases (Phase 2.3.x).
+  - `packages/cli/src/ui/utils/updateCheck.test.ts` — removed the upstream
+    "channel stability" test block (referenced now-unused `getPackageJson` /
+    `latestVersion` mocks).
+- Commits 3–5 applied cleanly with no conflicts.
+
+**Post-rebase build fixes (committed as `chore: post-rebase verification cleanup`):**
+
+- Removed orphaned `LocalServerCard.tsx` + `.test.tsx` (only consumers were
+  each other; `LocalDialog.tsx` and `useLocalCommand.ts` were correctly
+  deleted by Phase 2.2 commit during the rebase).
+- Defensive optional chaining on every fork-method call inside upstream-shared
+  files, so upstream tests that mock `Config` partially can still execute the
+  code path:
+  - `packages/core/src/prompts/promptProvider.ts` — `isLocalMode?.()` /
+    `getLocalPromptMode?.()`
+  - `packages/core/src/tools/write-file.ts` — `isLocalMode?.()`
+  - `packages/core/src/core/baseLlmClient.ts` — `isLocalMode?.()` /
+    `getLocalModel?.()`
+  - `packages/core/src/core/client.ts` — 4 sites guarded with `?.()`.
+  Pattern: every fork-only `Config` method called from an upstream-shared
+  source file MUST use optional chaining. Tests in this repo use partial
+  `Config` mocks; without `?.` you get `TypeError: config.isLocalMode is
+  not a function` cascading across dozens of unrelated tests.
+- Added `CustomProviderDefinition` to `SETTINGS_SCHEMA_DEFINITIONS` in
+  `packages/cli/src/config/settingsSchema.ts` — upstream added a test that
+  walks every `ref:` referenced from the main schema and asserts a matching
+  definition exists. The fork's `providers.custom.<id>` block points at
+  `ref: 'CustomProviderDefinition'`.
+- Updated `packages/cli/src/ui/components/ProviderDialog.test.tsx` "add
+  screen renders all five fields" → "all seven fields" since Phase 2.4 added
+  the keychain-paste field and the wire-format toggle.
+
+**Remaining environmental test failures (not regressions):**
+
+`packages/core/src/services/sandboxManager.integration.test.ts` — 19 tests
+fail with `bwrap: setting up uid map: Permission denied`. This requires
+`bubblewrap` capabilities at the kernel level which are unavailable in
+sandboxed dev environments (containers, restricted VMs, the Cursor agent
+runtime). Pre-existing on upstream `main`. Not touched by the rebase.
+
+**Rebase playbook (copy this verbatim for the next one):**
+
+```bash
+# 1. Safety branch FIRST.
+git checkout -b pre-rebase-backup
+
+# 2. Pull upstream and start the rebase.
+git checkout main
+git fetch upstream
+git rebase upstream/main
+
+# 3. For each conflict, the resolution is almost always:
+#    "keep both upstream and local additions, then clean up later".
+#    Use a Python bulk-resolver for the 9-file pattern in commits 1+2.
+
+# 4. After all commits land:
+npm run build           # MUST pass — TypeScript will catch the load()
+                        # signature drift in settings.ts.
+npm run typecheck       # MUST pass.
+npm run test -w @google/gemini-cli-core   # ignore sandbox env failures
+npm run test -w @google/gemini-cli        # MUST be 100% pass
+
+# 5. If any upstream test fails with "config.<localMethod> is not a function",
+#    add `?.()` optional chaining at that call site (NOT in the test file —
+#    in the upstream-shared source file that we touched).
+
+# 6. Commit cleanup as `chore: post-rebase verification cleanup`.
+```
+
+---
 
 FORK-ONLY FILES (for rebase reference):
 

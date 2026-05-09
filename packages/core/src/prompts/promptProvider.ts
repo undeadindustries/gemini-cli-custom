@@ -107,9 +107,11 @@ export class PromptProvider {
     }
 
     // --- Local LLM: lightweight prompt ---
+    // Optional chaining keeps these safe for upstream test stubs that
+    // construct partial Config mocks without the fork-only methods.
     if (
-      context.config.isLocalMode() &&
-      context.config.getLocalPromptMode() !== 'full'
+      context.config.isLocalMode?.() &&
+      context.config.getLocalPromptMode?.() !== 'full'
     ) {
       // --- LOCAL FORK ADDITION (Phase 2.4.8: provider-aware identity) ---
       // Forward the resolved model id and provider display name into the

@@ -574,7 +574,7 @@ export class WriteFileTool
     // failure surfaces to the model as a recoverable tool error instead of
     // silent file corruption. Local mode only — the marker is never produced
     // upstream. See packages/core/src/context/writeFileEjection.ts.
-    if (this.config.isLocalMode()) {
+    if (this.config.isLocalMode?.()) {
       const trimmedContent = params.content.trimStart();
       if (trimmedContent.startsWith(`<${WRITE_FILE_EJECTION_TAG} `)) {
         return (
