@@ -18,6 +18,9 @@ import type { ContentGenerator } from './contentGenerator.js';
 import type { Config } from '../config/config.js';
 import type { LlmRole } from '../telemetry/llmRole.js';
 import { debugLogger } from '../utils/debugLogger.js';
+// --- LOCAL FORK ADDITION (Phase 2.4.7: opt-in wire-level logger) ---
+import { logWire, isWireLoggingEnabled } from './wireLogger.js';
+// --- END LOCAL FORK ADDITION ---
 // --- LOCAL FORK ADDITION (Phase 2.0.7-diag) ---
 import { appendFileSync } from 'node:fs';
 // --- END LOCAL FORK ADDITION ---
@@ -706,11 +709,139 @@ export class LocalLlmContentGenerator implements ContentGenerator {
     // --- END LOCAL FORK ADDITION ---
   ) {}
 
+  // --- LOCAL FORK ADDITION (Phase 2.4.7: content-type guard) ---
+  /**
+   * Verify a 2xx response actually has the content-type we know how to
+   * parse. Throws a clear, user-actionable error otherwise.
+   *
+   * Why this exists
+   *   The previous silent-failure case was: user configured an OpenRouter
+   *   provider with `--url https://openrouter.ai/api/v1` (the API root,
+   *   missing `/chat/completions`). OpenRouter served HTTP 200 with the
+   *   homepage HTML at that path. Our generator only checked
+   *   `response.ok`, then either tried `response.json()` (which threw
+   *   somewhere downstream the user never saw) or piped HTML through the
+   *   SSE parser (which yielded zero events and returned cleanly — the
+   *   chat session sat there with no response and no error).
+   *
+   *   This guard converts that into an immediate throw with the URL,
+   *   status, observed content-type, and a body preview, which rides
+   *   the same `Turn.run → handleErrorEvent → addItem(ERROR)` path as
+   *   any other generator throw and is therefore visible in chat.
+   *
+   * Tolerances
+   *   - JSON path accepts any `application/json` variant (including
+   *     `application/json; charset=utf-8`).
+   *   - SSE path accepts `text/event-stream` and treats `application/json`
+   *     as a valid alternate when the server returned an error envelope
+   *     for a streaming request (e.g. some hosted providers send
+   *     `{ "error": { ... } }` with status 200 — vendor-specific edge case
+   *     we let through so the SSE parser can surface the embedded error).
+   *   - Missing `Content-Type` header is treated as suspicious for SSE
+   *     but tolerated for JSON to keep the path forgiving for picky
+   *     local servers.
+   *
+   * Body preview length matches the wire-log truncation budget so we
+   * never log more than ~2 KB of HTML if a misconfigured endpoint
+   * returns its homepage.
+   */
+  private async assertResponseContentType(
+    response: Response,
+    expected: 'json' | 'sse',
+  ): Promise<void> {
+    const contentType = (response.headers.get('content-type') ?? '')
+      .toLowerCase()
+      .trim();
+    const isJson = contentType.startsWith('application/json');
+    const isSse = contentType.startsWith('text/event-stream');
+    if (expected === 'json' && isJson) return;
+    if (expected === 'sse' && (isSse || isJson)) return;
+    // Tolerate missing content-type only on the JSON path; some bare
+    // local servers omit it. SSE without text/event-stream is always
+    // a routing/configuration problem worth flagging.
+    if (expected === 'json' && contentType === '') return;
+    let preview = '<unreadable>';
+    try {
+      const text = await response.clone().text();
+      preview = text.length > 2000 ? text.slice(0, 2000) + '…' : text;
+    } catch {
+      /* keep <unreadable> */
+    }
+    throw new Error(
+      `Provider at ${this.url} returned HTTP ${response.status} but with ` +
+        `unexpected Content-Type "${contentType || '<missing>'}" ` +
+        `(expected ${expected === 'json' ? 'application/json' : 'text/event-stream'}). ` +
+        `This usually means the URL is wrong (e.g. the API root rather than ` +
+        `/v1/chat/completions). Body preview: ${preview}`,
+    );
+  }
+  // --- END LOCAL FORK ADDITION ---
+
+  // --- LOCAL FORK ADDITION (Phase 2.4.6: pre-flight model check) ---
+  /**
+   * Reject the `'local-model'` placeholder before issuing an HTTP call when
+   * the configured URL points at a hosted (non-localhost) endpoint.
+   *
+   * `'local-model'` is a sentinel meaning "server, you pick" — vLLM,
+   * llama.cpp, and Ollama happily ignore the model field and use whatever
+   * is currently loaded. Hosted endpoints (OpenAI, OpenRouter, Together,
+   * Groq, ...) reject it with an opaque HTTP 400, which historically
+   * surfaced as a confusing chat error far from its root cause.
+   *
+   * Throwing here converts that into an actionable client-side error
+   * BEFORE any wire traffic. The thrown Error rides the same
+   * `Turn.run` → `handleErrorEvent` → `addItem(MessageType.ERROR)` path
+   * as any other generator throw.
+   *
+   * Hostnames treated as "local" (placeholder is allowed):
+   *   - `localhost`, `127.0.0.1`, `::1`
+   *   - RFC1918 ranges that show up in dev: `10.*`, `192.168.*`,
+   *     `172.16.*`–`172.31.*`
+   *   - mDNS `.local` suffix (Bonjour / Avahi)
+   *
+   * Anything else throws with guidance to set the model. The check is
+   * intentionally permissive on the localhost side — false negatives
+   * here just mean a 400 from the server, which is the pre-fix status
+   * quo.
+   */
+  private assertModelOrLocalhost(): void {
+    if (this.model !== 'local-model') return;
+    let hostname: string;
+    try {
+      hostname = new URL(this.url).hostname;
+    } catch {
+      // Malformed URL: let the fetch path produce its own error.
+      return;
+    }
+    // URL.hostname returns IPv6 addresses with surrounding brackets
+    // (e.g. '[::1]'); strip them before comparison.
+    const lower = hostname.toLowerCase().replace(/^\[|\]$/g, '');
+    const isLoopback =
+      lower === 'localhost' || lower === '127.0.0.1' || lower === '::1';
+    const isRfc1918 =
+      lower.startsWith('10.') ||
+      lower.startsWith('192.168.') ||
+      /^172\.(1[6-9]|2\d|3[0-1])\./.test(lower);
+    const isMdns = lower.endsWith('.local');
+    if (isLoopback || isRfc1918 || isMdns) return;
+    throw new Error(
+      `No model configured for provider at ${this.url}. ` +
+        `The 'local-model' placeholder only works for localhost / private-network ` +
+        `OpenAI-compatible servers (vLLM, llama.cpp, Ollama). Set a model with ` +
+        `'/model set <name> --persist' or '/provider set <id> model <name>', ` +
+        `or browse available models with '/provider models <id>'.`,
+    );
+  }
+  // --- END LOCAL FORK ADDITION ---
+
   async generateContent(
     request: GenerateContentParameters,
     _userPromptId: string,
     _role: LlmRole,
   ): Promise<GenerateContentResponse> {
+    // --- LOCAL FORK ADDITION (Phase 2.4.6) ---
+    this.assertModelOrLocalhost();
+    // --- END LOCAL FORK ADDITION ---
     const { messages, tools } = this.translateRequest(request);
 
     const body: Record<string, unknown> = {
@@ -747,8 +878,12 @@ export class LocalLlmContentGenerator implements ContentGenerator {
 
     if (!response.ok) {
       const text = await response.text().catch(() => '<unreadable>');
-      // --- LOCAL FORK ADDITION (Phase 2.0.6-diag) ---
-      if (response.status === 400) {
+      // --- LOCAL FORK ADDITION (Phase 2.0.6-diag, widened in 2.4.7) ---
+      // Fire the role-sequence diag on ANY non-2xx, not just 400. The
+      // diagnostic value is the same for 401/403/404/405/429/5xx, and
+      // hosted endpoints often surface configuration mistakes (wrong
+      // URL, wrong API key, wrong model id) as non-400 responses.
+      if (!response.ok) {
         const roleSeq = messages.map((m, idx) => {
           let label = `[${idx}] ${m.role}`;
           if (m.role === 'assistant' && m.tool_calls) {
@@ -759,7 +894,7 @@ export class LocalLlmContentGenerator implements ContentGenerator {
           }
           return label;
         });
-        const diagOutput = `[${new Date().toISOString()}] 400 error (non-stream) — model="${this.model}", isMistral=${isMistralFamilyModel(this.model)}\nRole sequence:\n${roleSeq.join('\n')}\nvLLM error: ${text}\n\n`;
+        const diagOutput = `[${new Date().toISOString()}] HTTP ${response.status} (non-stream) — url="${this.url}", model="${this.model}", isMistral=${isMistralFamilyModel(this.model)}\nRole sequence:\n${roleSeq.join('\n')}\nServer body: ${text}\n\n`;
         try {
           const fs = await import('node:fs');
           fs.appendFileSync('/tmp/gemini-local-diag.log', diagOutput);
@@ -768,8 +903,12 @@ export class LocalLlmContentGenerator implements ContentGenerator {
         }
       }
       // --- END LOCAL FORK ADDITION ---
-      throw new Error(`Local LLM returned HTTP ${response.status}: ${text}`);
+      throw new Error(`Provider returned HTTP ${response.status}: ${text}`);
     }
+
+    // --- LOCAL FORK ADDITION (Phase 2.4.7) ---
+    await this.assertResponseContentType(response, 'json');
+    // --- END LOCAL FORK ADDITION ---
 
     // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion
     const json = (await response.json()) as OpenAINonStreamResponse;
@@ -794,6 +933,9 @@ export class LocalLlmContentGenerator implements ContentGenerator {
     _userPromptId: string,
     _role: LlmRole,
   ): Promise<AsyncGenerator<GenerateContentResponse>> {
+    // --- LOCAL FORK ADDITION (Phase 2.4.6) ---
+    this.assertModelOrLocalhost();
+    // --- END LOCAL FORK ADDITION ---
     const { messages, tools } = this.translateRequest(request);
 
     const body: Record<string, unknown> = {
@@ -831,8 +973,8 @@ export class LocalLlmContentGenerator implements ContentGenerator {
 
     if (!response.ok) {
       const text = await response.text().catch(() => '<unreadable>');
-      // --- LOCAL FORK ADDITION (Phase 2.0.6-diag) ---
-      if (response.status === 400) {
+      // --- LOCAL FORK ADDITION (Phase 2.0.6-diag, widened in 2.4.7) ---
+      if (!response.ok) {
         const roleSeq = messages.map((m, idx) => {
           let label = `[${idx}] ${m.role}`;
           if (m.role === 'assistant' && m.tool_calls) {
@@ -843,7 +985,7 @@ export class LocalLlmContentGenerator implements ContentGenerator {
           }
           return label;
         });
-        const diagOutput = `[${new Date().toISOString()}] 400 error (stream) — model="${this.model}", isMistral=${isMistralFamilyModel(this.model)}\nRole sequence:\n${roleSeq.join('\n')}\nvLLM error: ${text}\n\n`;
+        const diagOutput = `[${new Date().toISOString()}] HTTP ${response.status} (stream) — url="${this.url}", model="${this.model}", isMistral=${isMistralFamilyModel(this.model)}\nRole sequence:\n${roleSeq.join('\n')}\nServer body: ${text}\n\n`;
         try {
           const fs = await import('node:fs');
           fs.appendFileSync('/tmp/gemini-local-diag.log', diagOutput);
@@ -852,11 +994,15 @@ export class LocalLlmContentGenerator implements ContentGenerator {
         }
       }
       // --- END LOCAL FORK ADDITION ---
-      throw new Error(`Local LLM returned HTTP ${response.status}: ${text}`);
+      throw new Error(`Provider returned HTTP ${response.status}: ${text}`);
     }
 
+    // --- LOCAL FORK ADDITION (Phase 2.4.7) ---
+    await this.assertResponseContentType(response, 'sse');
+    // --- END LOCAL FORK ADDITION ---
+
     if (!response.body) {
-      throw new Error('Local LLM response has no body for streaming');
+      throw new Error('Provider response has no body for streaming');
     }
 
     return this.parseSSEStream(response.body, body);
@@ -940,7 +1086,23 @@ export class LocalLlmContentGenerator implements ContentGenerator {
     if (systemInstruction) {
       const text = this.extractTextFromContentUnion(systemInstruction);
       if (text) {
-        messages.push({ role: 'system', content: text });
+        // --- LOCAL FORK ADDITION (Phase 2.4.7: system-prompt override) ---
+        // If the active provider has a non-empty `systemPromptOverride`,
+        // replace the upstream Gemini-CLI preamble wholesale. The
+        // upstream prompt mentions "Gemini CLI" / "GEMINI.md" enough
+        // that non-Gemini models pattern-match and self-identify as
+        // Google's model; this knob lets users opt out.
+        //
+        // Caveats noted in the schema doc: this drops tool-use guidance
+        // and sandbox reminders along with the identity bits. Users who
+        // set it are explicitly choosing a clean prompt. Empty string
+        // (the default) means "no override" → original text used.
+        const eff = this.config.getEffectiveProviderConfig?.();
+        const override = eff?.systemPromptOverride;
+        const finalText =
+          typeof override === 'string' && override.length > 0 ? override : text;
+        messages.push({ role: 'system', content: finalText });
+        // --- END LOCAL FORK ADDITION ---
       }
     }
 
@@ -1499,8 +1661,8 @@ export class LocalLlmContentGenerator implements ContentGenerator {
 
     if (!response.ok) {
       const text = await response.text().catch(() => '<unreadable>');
-      // --- LOCAL FORK ADDITION (Phase 2.0.6-diag) ---
-      if (response.status === 400) {
+      // --- LOCAL FORK ADDITION (Phase 2.0.6-diag, widened in 2.4.7) ---
+      if (!response.ok) {
         const rawMsgs = nonStreamBody['messages'];
         const bodyMsgs: OpenAIMessage[] = Array.isArray(rawMsgs)
           ? rawMsgs.filter(
@@ -1517,7 +1679,7 @@ export class LocalLlmContentGenerator implements ContentGenerator {
           }
           return label;
         });
-        const diagOutput = `[${new Date().toISOString()}] 400 error (retryNonStreaming) — model="${this.model}", isMistral=${isMistralFamilyModel(this.model)}\nRole sequence:\n${roleSeq.join('\n')}\nvLLM error: ${text}\n\n`;
+        const diagOutput = `[${new Date().toISOString()}] HTTP ${response.status} (retryNonStreaming) — url="${this.url}", model="${this.model}", isMistral=${isMistralFamilyModel(this.model)}\nRole sequence:\n${roleSeq.join('\n')}\nServer body: ${text}\n\n`;
         try {
           const fs = await import('node:fs');
           fs.appendFileSync('/tmp/gemini-local-diag.log', diagOutput);
@@ -1527,7 +1689,7 @@ export class LocalLlmContentGenerator implements ContentGenerator {
       }
       // --- END LOCAL FORK ADDITION ---
       throw new Error(
-        `Local LLM non-streaming retry returned HTTP ${response.status}: ${text}`,
+        `Provider non-streaming retry returned HTTP ${response.status}: ${text}`,
       );
     }
 
@@ -1876,9 +2038,60 @@ export class LocalLlmContentGenerator implements ContentGenerator {
         };
         // --- END LOCAL FORK ADDITION ---
         if (dispatcher) init.dispatcher = dispatcher;
+        // --- LOCAL FORK ADDITION (Phase 2.4.7) ---
+        if (isWireLoggingEnabled()) {
+          logWire({
+            kind: 'request',
+            generator: 'openai-chat',
+            url: this.url,
+            method: 'POST',
+            headers,
+            body: typeof init.body === 'string' ? init.body : undefined,
+          });
+        }
+        // --- END LOCAL FORK ADDITION ---
         const response = await fetch(this.url, init);
+        // --- LOCAL FORK ADDITION (Phase 2.4.7) ---
+        if (isWireLoggingEnabled()) {
+          // Clone before reading so the caller still gets the full stream.
+          // For non-2xx, capture the body too so we can see the server's
+          // error payload (the most common debugging need).
+          let bodyPreview: string | undefined;
+          if (!response.ok) {
+            try {
+              bodyPreview = await response.clone().text();
+            } catch {
+              bodyPreview = '<unreadable>';
+            }
+          }
+          const respHeaders: Record<string, string> = {};
+          response.headers.forEach((v, k) => {
+            respHeaders[k] = v;
+          });
+          logWire({
+            kind: 'response',
+            generator: 'openai-chat',
+            url: this.url,
+            status: response.status,
+            ok: response.ok,
+            headers: respHeaders,
+            body: bodyPreview,
+          });
+        }
+        // --- END LOCAL FORK ADDITION ---
         return response;
       } catch (error: unknown) {
+        // --- LOCAL FORK ADDITION (Phase 2.4.7) ---
+        if (isWireLoggingEnabled()) {
+          logWire({
+            kind: 'error',
+            generator: 'openai-chat',
+            url: this.url,
+            phase: 'fetch',
+            message: error instanceof Error ? error.message : String(error),
+          });
+        }
+        // --- END LOCAL FORK ADDITION ---
         if (error instanceof Error && error.name === 'AbortError') {
           throw new Error(
             `Local LLM request timed out after ${timeoutMs}ms. ` +

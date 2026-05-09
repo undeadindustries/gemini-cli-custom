@@ -128,6 +128,10 @@ describe('BaseLlmClient', () => {
       getMaxAttempts: vi.fn().mockReturnValue(3),
       getModel: vi.fn().mockReturnValue('test-model'),
       getActiveModel: vi.fn().mockReturnValue('test-model'),
+      // --- LOCAL FORK ADDITION (Phase 2.4.9: compression routing) ---
+      isLocalMode: vi.fn().mockReturnValue(false),
+      getLocalModel: vi.fn().mockReturnValue('test-model'),
+      // --- END LOCAL FORK ADDITION ---
     } as unknown as Mocked<Config>;
 
     client = new BaseLlmClient(mockContentGenerator, mockConfig);
@@ -874,4 +878,65 @@ describe('BaseLlmClient', () => {
       expect(secondCall?.config?.temperature).toBe(0.9);
     });
   });
+
+  // --- LOCAL FORK ADDITION (Phase 2.4.9: compression routing) ---
+  describe('Local-mode model override', () => {
+    it('should use getLocalModel() when isLocalMode() returns true, ignoring Gemini alias', async () => {
+      // Simulate an OpenAI-compat provider with a custom model
+      vi.mocked(mockConfig.isLocalMode).mockReturnValue(true);
+      vi.mocked(mockConfig.getLocalModel).mockReturnValue(
+        'deepseek/deepseek-v4-flash',
+      );
+
+      mockGenerateContent.mockResolvedValue(
+        createMockResponse('{"color":"blue"}'),
+      );
+      vi.mocked(retryWithBackoff).mockImplementation(async (fn) => fn());
+
+      await client.generateJson({
+        // This is the alias that compression passes — it maps to
+        // 'gemini-3-pro-preview' via defaultModelConfigs in Gemini mode.
+        // In local mode it MUST be replaced by the provider's own model.
+        modelConfigKey: { model: 'chat-compression-default' },
+        contents: [{ role: 'user', parts: [{ text: 'summarize' }] }],
+        schema: { type: 'object' },
+        abortSignal: abortController.signal,
+        promptId: 'test-prompt-id',
+        role: LlmRole.UTILITY_COMPRESSOR,
+      });
+
+      const [callParams] = mockGenerateContent.mock.calls[0] ?? [];
+      // The model in the actual request body must be the provider model, not
+      // the Gemini alias resolution of 'chat-compression-default'.
+      expect(callParams?.model).toBe('deepseek/deepseek-v4-flash');
+    });
+
+    it('should NOT override the model via getLocalModel() when isLocalMode() is false', async () => {
+      vi.mocked(mockConfig.isLocalMode).mockReturnValue(false);
+
+      mockGenerateContent.mockResolvedValue(
+        createMockResponse('{"color":"red"}'),
+      );
+      vi.mocked(retryWithBackoff).mockImplementation(async (fn) => fn());
+
+      await client.generateJson({
+        modelConfigKey: { model: 'chat-compression-default' },
+        contents: [{ role: 'user', parts: [{ text: 'summarize' }] }],
+        schema: { type: 'object' },
+        abortSignal: abortController.signal,
+        promptId: 'test-prompt-id',
+        role: LlmRole.UTILITY_COMPRESSOR,
+      });
+
+      // getLocalModel must NOT be consulted when not in local mode
+      expect(mockConfig.getLocalModel).not.toHaveBeenCalled();
+      // getResolvedConfig must have been called with the original alias
+      expect(
+        mockConfig.modelConfigService.getResolvedConfig,
+      ).toHaveBeenCalledWith(
+        expect.objectContaining({ model: 'chat-compression-default' }),
+      );
+    });
+  });
+  // --- END LOCAL FORK ADDITION ---
 });

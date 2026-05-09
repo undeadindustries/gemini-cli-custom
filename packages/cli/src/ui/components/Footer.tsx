@@ -323,7 +323,14 @@ export const Footer: React.FC = () => {
         break;
       }
       case 'model-name': {
-        const str = getDisplayString(model);
+        // --- LOCAL FORK ADDITION (Phase 2.4.3: friendlier placeholder) ---
+        // 'local-model' is the internal placeholder used when a provider
+        // has no defaultModel and the user hasn't picked one. Render it as
+        // '(server picks)' for the footer; the raw value is still used
+        // verbatim by ContextUsageDisplay below for token-limit lookups.
+        const displayModel = model === 'local-model' ? '(server picks)' : model;
+        const str = getDisplayString(displayModel);
+        // --- END LOCAL FORK ADDITION ---
         addCol(
           id,
           header,

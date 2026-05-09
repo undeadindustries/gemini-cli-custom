@@ -312,6 +312,17 @@ export class GeminiClient {
     this.getChat().setHistory(history);
     this.updateTelemetryTokenCount();
     this.forceFullIdeContext = true;
+    // --- LOCAL FORK ADDITION (Phase 2.4: OpenAI Responses API) ---
+    // Any client-side history mutation (history truncation, /compress
+    // result, manual setHistory) means the server's chained state is
+    // now divergent from ours. Drop the previous_response_id so the
+    // next Responses request re-sends the full input. No-op for chat /
+    // gemini wire formats — only OpenAIResponsesContentGenerator reads
+    // this field. The clear is unconditional (rather than gated on
+    // useResponseChaining) because the field is only ever populated
+    // when chaining is on; clearing an empty value is a free no-op.
+    this.config.clearLastResponseId?.();
+    // --- END LOCAL FORK ADDITION ---
   }
 
   private lastUsedModelId?: string;
@@ -338,6 +349,13 @@ export class GeminiClient {
     // Reset JIT context loaded paths so subdirectory context can be
     // re-discovered in the new session.
     await this.config.getMemoryContextManager()?.refresh();
+    // --- LOCAL FORK ADDITION (Phase 2.4: OpenAI Responses API) ---
+    // /clear and /chat resume rebuild the chat from scratch; the
+    // server's chained state is by definition stale at this point.
+    // Drop the previous_response_id so the next Responses request
+    // re-sends the new (empty) input fresh.
+    this.config.clearLastResponseId?.();
+    // --- END LOCAL FORK ADDITION ---
   }
 
   dispose() {

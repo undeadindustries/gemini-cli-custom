@@ -46,6 +46,11 @@ import { initCommand } from '../ui/commands/initCommand.js';
 // switcher across every backend (local-vllm, openai, gemini-*, ...).
 import { providerCommand } from '../ui/commands/providerCommand.js';
 // --- END LOCAL FORK ADDITION ---
+// --- LOCAL FORK ADDITION (Phase 2.4: OpenAI Responses API) ---
+// `/reasoning` toggles the OpenAI Responses reasoning-effort knob.
+// No-ops loudly when the active provider is not openai-responses.
+import { reasoningCommand } from '../ui/commands/reasoningCommand.js';
+// --- END LOCAL FORK ADDITION ---
 import { mcpCommand } from '../ui/commands/mcpCommand.js';
 import { memoryCommand } from '../ui/commands/memoryCommand.js';
 import { modelCommand } from '../ui/commands/modelCommand.js';
@@ -175,6 +180,9 @@ export class BuiltinCommandLoader implements ICommandLoader {
       ...(isNightlyBuild ? [oncallCommand] : []),
       // --- LOCAL FORK ADDITION (Phase 2.2) ---
       providerCommand,
+      // --- END LOCAL FORK ADDITION ---
+      // --- LOCAL FORK ADDITION (Phase 2.4: OpenAI Responses API) ---
+      reasoningCommand,
       // --- END LOCAL FORK ADDITION ---
       ...(this.config?.getMcpEnabled() === false
         ? [

@@ -216,6 +216,8 @@ describe('<UserIdentity />', () => {
       apiKeyEnvVar: '',
       wireFormat: 'openai-chat',
       authType: AuthType.LOCAL,
+      useResponseChaining: false,
+      systemPromptOverride: '',
     });
 
     const { lastFrame, unmount } = await renderWithProviders(
@@ -256,6 +258,8 @@ describe('<UserIdentity />', () => {
       apiKeyEnvVar: 'OPENAI_API_KEY',
       wireFormat: 'openai-chat',
       authType: AuthType.LOCAL,
+      useResponseChaining: false,
+      systemPromptOverride: '',
     });
 
     const { lastFrame, unmount } = await renderWithProviders(
@@ -315,6 +319,8 @@ describe('<UserIdentity />', () => {
       apiKeyEnvVar: '',
       wireFormat: 'gemini',
       authType: AuthType.LOGIN_WITH_GOOGLE,
+      useResponseChaining: false,
+      systemPromptOverride: '',
     });
 
     const { lastFrame, unmount } = await renderWithProviders(
@@ -354,6 +360,8 @@ describe('<UserIdentity />', () => {
       apiKeyEnvVar: 'GEMINI_API_KEY',
       wireFormat: 'gemini',
       authType: AuthType.USE_GEMINI,
+      useResponseChaining: false,
+      systemPromptOverride: '',
     });
 
     const { lastFrame, unmount } = await renderWithProviders(
@@ -390,6 +398,8 @@ describe('<UserIdentity />', () => {
       apiKeyEnvVar: '',
       wireFormat: 'gemini',
       authType: AuthType.USE_VERTEX_AI,
+      useResponseChaining: false,
+      systemPromptOverride: '',
     });
 
     const { lastFrame, unmount } = await renderWithProviders(
@@ -400,6 +410,94 @@ describe('<UserIdentity />', () => {
     expect(output).toContain('Active: Gemini (Vertex AI) (gemini-vertex)');
     expect(output).toContain('Auth: Vertex AI / ADC');
     expect(output).not.toContain('URL:');
+    unmount();
+  });
+  // --- END LOCAL FORK ADDITION ---
+
+  // --- LOCAL FORK ADDITION (Phase 2.4: OpenAI Responses API) ---
+  it('renders the Reasoning row for openai-responses providers', async () => {
+    const mockConfig = makeFakeConfig();
+    vi.spyOn(mockConfig, 'getContentGeneratorConfig').mockReturnValue({
+      authType: AuthType.LOCAL,
+    } as unknown as ContentGeneratorConfig);
+    vi.spyOn(mockConfig, 'getUserTierName').mockReturnValue(undefined);
+    vi.spyOn(mockConfig, 'getEffectiveProviderConfig').mockReturnValue({
+      url: 'https://api.openai.com/v1/responses',
+      model: 'gpt-5-codex',
+      contextLimit: 400_000,
+      promptMode: 'full',
+      parserMode: 'strict',
+      timeout: 600000,
+      enableTools: true,
+      displayName: 'OpenAI Responses',
+      providerId: 'openai-responses',
+      requiresApiKey: true,
+      apiKeyEnvVar: 'OPENAI_API_KEY',
+      wireFormat: 'openai-responses',
+      authType: AuthType.LOCAL,
+      reasoningEffort: 'high',
+      useResponseChaining: false,
+      systemPromptOverride: '',
+    });
+    vi.spyOn(mockConfig, 'getSessionReasoningOverride').mockReturnValue(
+      undefined,
+    );
+    vi.spyOn(mockConfig, 'getLastResponseId').mockReturnValue(undefined);
+
+    const { lastFrame, unmount } = await renderWithProviders(
+      <UserIdentity config={mockConfig} />,
+    );
+
+    const output = lastFrame();
+    expect(output).toContain('Reasoning:');
+    expect(output).toContain('high');
+    // Chaining is off — explicit "off" wording must show.
+    expect(output).toContain('Chaining:');
+    expect(output).toMatch(/Chaining:\s*off/);
+    unmount();
+  });
+
+  it('shows session-override source and chained response id when both present', async () => {
+    const mockConfig = makeFakeConfig();
+    vi.spyOn(mockConfig, 'getContentGeneratorConfig').mockReturnValue({
+      authType: AuthType.LOCAL,
+    } as unknown as ContentGeneratorConfig);
+    vi.spyOn(mockConfig, 'getUserTierName').mockReturnValue(undefined);
+    vi.spyOn(mockConfig, 'getEffectiveProviderConfig').mockReturnValue({
+      url: 'https://api.openai.com/v1/responses',
+      model: 'gpt-5-codex',
+      contextLimit: 400_000,
+      promptMode: 'full',
+      parserMode: 'strict',
+      timeout: 600000,
+      enableTools: true,
+      displayName: 'OpenAI Responses',
+      providerId: 'openai-responses',
+      requiresApiKey: true,
+      apiKeyEnvVar: 'OPENAI_API_KEY',
+      wireFormat: 'openai-responses',
+      authType: AuthType.LOCAL,
+      reasoningEffort: 'medium',
+      useResponseChaining: true,
+      systemPromptOverride: '',
+    });
+    vi.spyOn(mockConfig, 'getSessionReasoningOverride').mockReturnValue('low');
+    vi.spyOn(mockConfig, 'getLastResponseId').mockReturnValue(
+      'resp_abc123def456',
+    );
+
+    const { lastFrame, unmount } = await renderWithProviders(
+      <UserIdentity config={mockConfig} />,
+    );
+
+    const output = lastFrame();
+    expect(output).toContain('Reasoning:');
+    expect(output).toContain('low'); // session override wins
+    // Either an indication of session override OR the response id is displayed.
+    expect(output).toMatch(/session|override|reasoning/i);
+    expect(output).toContain('Chaining:');
+    // Truncated id is rendered.
+    expect(output).toMatch(/resp_/);
     unmount();
   });
   // --- END LOCAL FORK ADDITION ---

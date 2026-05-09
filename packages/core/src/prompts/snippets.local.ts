@@ -19,6 +19,30 @@ import { isGitRepository } from '../utils/gitUtils.js';
 export interface LocalPromptOptions {
   sandboxEnabled: boolean;
   isInteractive: boolean;
+  // --- LOCAL FORK ADDITION (Phase 2.4.8: provider-aware identity) ---
+  /**
+   * Resolved model id for the active OpenAI-compat / custom provider,
+   * e.g. `'gpt-4o'`, `'deepseek/deepseek-r1'`, `'meta-llama/llama-3.3-70b'`.
+   *
+   * Surfaced into the lite system prompt so non-Gemini models can answer
+   * "what model are you?" honestly instead of pattern-matching on the
+   * "GEMINI.md" string in the user-memory section header and claiming to
+   * be Google's model.
+   *
+   * `undefined` (or the `'local-model'` placeholder, which the call site
+   * normalizes to `undefined`) means "the server picks" — typical for
+   * vLLM / Ollama where the loaded weight is opaque to the client. The
+   * identity line stays generic in that case.
+   */
+  providerModel?: string;
+  /**
+   * Human-readable provider display name, e.g. `'OpenAI'`, `'OpenRouter'`,
+   * `'Local vLLM'`. Optional; when present the identity line clarifies
+   * "served via <name>" so the model can disambiguate (e.g. DeepSeek
+   * routed through OpenRouter vs. DeepSeek's direct API).
+   */
+  providerName?: string;
+  // --- END LOCAL FORK ADDITION ---
 }
 
 /**
@@ -36,7 +60,7 @@ export function getLocalSystemPrompt(
 }
 
 function buildCorePrompt(options: LocalPromptOptions): string {
-  return `${renderIdentity()}
+  return `${renderIdentity(options.providerModel, options.providerName)}
 
 ${renderToolUsage()}
 
@@ -51,9 +75,53 @@ ${renderGit()}
 ${renderSandbox(options)}`.trim();
 }
 
-function renderIdentity(): string {
-  return `You are a local AI coding assistant. You help users with software engineering tasks using the tools available to you.`;
+// --- LOCAL FORK ADDITION (Phase 2.4.8: provider-aware identity) ---
+/**
+ * Build the identity preamble for the lite system prompt.
+ *
+ * Why this is provider-aware
+ *   The lite path runs only for OpenAI-compat / custom providers
+ *   (`isLocalMode()` is keyed on `wireFormat === 'openai-chat'`; Gemini
+ *   wire formats never reach this code). When the underlying model is
+ *   not Gemini — DeepSeek, Llama, Claude via OpenRouter, etc. — the old
+ *   identity line ("local AI coding assistant") combined with a memory
+ *   section literally headed `# Contextual Instructions (GEMINI.md)`
+ *   biased the model toward "I'm powered by the Gemini API" when asked
+ *   what it was. That's a hallucination, not a routing bug, but it
+ *   confuses users who picked a non-Gemini model on purpose.
+ *
+ * What this returns
+ *   - When `providerModel` is a real id (not `undefined`, not the
+ *     `'local-model'` server-picks placeholder): a concrete identity
+ *     line naming the model and (if known) the provider, plus an
+ *     explicit directive to identify accurately if asked.
+ *   - Otherwise: a neutral "AI coding assistant" line plus an
+ *     honest-answer directive that explicitly forbids claiming to be
+ *     Google Gemini or any model the assistant is not.
+ *
+ * The directive is necessary because models with strong tendencies to
+ * adopt personas from context (e.g. several open-weights families)
+ * will otherwise pattern-match on the "GEMINI" mentions in the
+ * memory header and project files. Telling them what they are — or
+ * telling them to be honest when they don't know — closes that gap
+ * without rebuild-time intervention.
+ */
+function renderIdentity(providerModel?: string, providerName?: string): string {
+  const isKnown = !!providerModel && providerModel !== 'local-model';
+
+  const who = isKnown
+    ? `You are ${providerModel}${providerName ? `, served via ${providerName},` : ','} an AI coding assistant.`
+    : `You are an AI coding assistant.`;
+
+  const selfId = isKnown
+    ? `If asked which AI model or LLM you are, identify yourself accurately as ${providerModel}${providerName ? ` (via ${providerName})` : ''}. Do not claim to be a different model.`
+    : `If asked which AI model or LLM you are, answer honestly based on your own knowledge. Do not claim to be Google Gemini or any specific model unless you genuinely are that model.`;
+
+  return `${who} You help users with software engineering tasks using the tools available to you.
+
+${selfId}`;
 }
+// --- END LOCAL FORK ADDITION ---
 
 function renderToolUsage(): string {
   return `## Tool Usage

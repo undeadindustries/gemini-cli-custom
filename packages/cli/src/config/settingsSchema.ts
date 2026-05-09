@@ -2612,6 +2612,186 @@ const SETTINGS_SCHEMA = {
           // --- END LOCAL FORK ADDITION ---
         },
       },
+      // --- LOCAL FORK ADDITION (Phase 2.4: OpenAI Responses API) ---
+      'openai-responses': {
+        type: 'object',
+        label: 'OpenAI Responses',
+        category: 'Advanced',
+        requiresRestart: false,
+        default: {},
+        description:
+          'Per-instance overrides for the OpenAI Responses provider (gpt-5, gpt-5-codex, o-series). Endpoint is POST /v1/responses with structured `input` and SSE response.* events. Defaults are taken from the registry; only set fields here that you want to override (e.g. switch to gpt-5-codex). API key is intentionally NOT a settings field — use /provider set openai-responses key.',
+        showInDialog: false,
+        properties: {
+          model: {
+            type: 'string',
+            label: 'OpenAI Responses Model',
+            category: 'Advanced',
+            requiresRestart: false,
+            default: '',
+            description:
+              'Model id sent to the Responses endpoint (e.g. gpt-5, gpt-5-codex, o3, o1). Leave empty to use the registry default (gpt-5).',
+            showInDialog: false,
+          },
+          baseUrl: {
+            type: 'string',
+            label: 'OpenAI Responses Base URL',
+            category: 'Advanced',
+            requiresRestart: false,
+            default: '',
+            description:
+              'Override the responses endpoint URL (e.g. for an Azure or proxy deployment). Leave empty to use https://api.openai.com/v1/responses.',
+            showInDialog: false,
+          },
+          contextLimit: {
+            type: 'number',
+            label: 'Context Window Limit (tokens)',
+            category: 'Advanced',
+            requiresRestart: false,
+            // Match the registry default. The dialog stamps the
+            // model-specific value when a new instance is added (gpt-5
+            // = 400K, o3 = 200K, gpt-oss-120b = 128K, etc.).
+            default: 400000,
+            description:
+              "Maximum context window size in tokens. Used for token accounting and the smart-context defenses; should match (or be lower than) the model card. gpt-5/gpt-5-codex = 400K, o-series = 200K, gpt-oss-120b = 128K. Note: Responses-format providers don't trigger the local 4-layer context defense (it's keyed on chat-completions wire), so this value is purely informational on hosted OpenAI.",
+            showInDialog: false,
+          },
+          promptMode: {
+            type: 'enum',
+            label: 'Prompt Mode',
+            category: 'Advanced',
+            requiresRestart: false,
+            default: 'lite',
+            description:
+              'System prompt size. "lite" sends a compact prompt (~3K chars) — recommended for most Responses workflows. "full" sends the complete Gemini CLI prompt (~15–20K chars) for maximum capability.',
+            showInDialog: false,
+            options: [
+              {
+                value: 'lite',
+                label: 'Lite (recommended)',
+              },
+              {
+                value: 'full',
+                label: 'Full (complete Gemini CLI prompt)',
+              },
+            ],
+          },
+          enableTools: {
+            type: 'boolean',
+            label: 'Enable Tool Calls',
+            category: 'Advanced',
+            requiresRestart: false,
+            default: true,
+            description:
+              'Send tool/function declarations on every Responses request. Default on; turn off for chat-only workflows where tool execution is undesirable.',
+            showInDialog: false,
+          },
+          timeout: {
+            type: 'number',
+            label: 'Request Timeout (ms)',
+            category: 'Advanced',
+            requiresRestart: false,
+            // o-series and gpt-5-codex with high reasoning effort can
+            // run for several minutes; the larger default keeps the
+            // first turn from timing out before the model finishes
+            // thinking.
+            default: 300000,
+            description:
+              'Timeout in milliseconds. Generous default (300s) accommodates long o-series reasoning and gpt-5-codex high-effort runs.',
+            showInDialog: false,
+          },
+          temperature: {
+            type: 'number',
+            label: 'Sampling Temperature',
+            category: 'Advanced',
+            requiresRestart: false,
+            default: undefined,
+            description:
+              "Sampling temperature forwarded on every request (0.0 – 2.0). gpt-5-codex and o-series typically perform best with temperature unset (server default) or in the 0.2–0.7 range. Leave unset to use the model's own default.",
+            showInDialog: false,
+          },
+          reasoningEffort: {
+            type: 'enum',
+            label: 'Reasoning Effort',
+            category: 'Advanced',
+            requiresRestart: false,
+            // 'medium' matches OpenAI's documented default for gpt-5
+            // and the o-series. gpt-5-codex defaults to 'low'
+            // server-side; users wanting that should explicitly pick
+            // 'low' here (or rely on the server default by clearing
+            // the field via the dialog / /provider set).
+            default: 'medium',
+            description:
+              'Reasoning depth knob (top-level `reasoning.effort`). "minimal" is fastest / cheapest; "high" is deepest / slowest. gpt-5-codex defaults to low server-side, gpt-5 / o-series default to medium. Override per-session with /reasoning <level>.',
+            showInDialog: false,
+            options: [
+              { value: 'minimal', label: 'Minimal (fastest)' },
+              { value: 'low', label: 'Low' },
+              { value: 'medium', label: 'Medium (recommended)' },
+              { value: 'high', label: 'High (deepest reasoning)' },
+            ],
+          },
+          useResponseChaining: {
+            type: 'boolean',
+            label: 'Use Response Chaining (stateful)',
+            category: 'Advanced',
+            requiresRestart: false,
+            // Default OFF on purpose: chaining bypasses the CLI's
+            // client-owned 4-layer context defense and the /clear
+            // semantics most users expect. Opt in deliberately.
+            default: false,
+            description:
+              'When true, after the first turn the CLI sends only the new user input plus `previous_response_id`, letting OpenAI keep server-side state. Cheaper turns but bypasses local context management — the CLI invalidates the stored id on /clear, /compress, errors, and provider switches so a desync never persists past one turn.',
+            showInDialog: false,
+          },
+          // --- LOCAL FORK ADDITION (Phase 2.4.7: system-prompt override) ---
+          // Why: the upstream Gemini CLI builds its system instruction
+          // around a "You are an interactive CLI agent specializing in
+          // software engineering tasks" preamble plus a long "## How
+          // Gemini handles ..." section. When the underlying provider
+          // is e.g. DeepSeek via OpenRouter, the model sees so many
+          // mentions of "Gemini CLI" / "GEMINI.md" that it pattern-
+          // matches and replies with "I'm Google Gemini." This is a
+          // model-side identity hallucination — there is no routing
+          // bug — but it confuses users who picked DeepSeek on purpose.
+          //
+          // This setting lets a custom provider replace the entire
+          // upstream system instruction with a clean string of the
+          // user's choosing. Empty / unset (the default) preserves
+          // upstream behavior exactly. Setting it to e.g. "You are a
+          // helpful coding assistant." gives the model a neutral
+          // identity and the same toolset.
+          //
+          // Caveats (verified, not hypothetical):
+          //   - This replaces the *whole* upstream system prompt.
+          //     Tool-use guidance, file-handling rules, sandbox
+          //     reminders, and project context (GEMINI.md) all go
+          //     with it. Users opting in are saying "I want a clean
+          //     prompt and I accept that downstream behavior may
+          //     change."
+          //   - GEMINI.md / project memory contents are still
+          //     concatenated separately by upstream — this knob only
+          //     replaces the *base* preamble. (See the
+          //     systemInstruction extraction in
+          //     localLlmContentGenerator.translateRequest and the
+          //     symmetric path in openaiResponsesContentGenerator.)
+          //   - Per-provider only. Gemini providers ignore it because
+          //     the Gemini wire path doesn't route through these
+          //     translators.
+          systemPromptOverride: {
+            type: 'string',
+            label: 'System-Prompt Override',
+            category: 'Advanced',
+            requiresRestart: false,
+            default: '',
+            description:
+              'Optional. When non-empty, replaces the entire upstream system instruction (the "Gemini CLI" preamble) with this string. Useful when the underlying model is not Gemini and self-identifies incorrectly. Leave empty to preserve upstream behavior. Tool-use rules and sandbox reminders are also replaced — set carefully.',
+            showInDialog: false,
+          },
+          // --- END LOCAL FORK ADDITION ---
+        },
+      },
+      // --- END LOCAL FORK ADDITION ---
       // --- LOCAL FORK ADDITION (Phase 2.3) ---
       custom: {
         type: 'object',
@@ -2620,7 +2800,7 @@ const SETTINGS_SCHEMA = {
         requiresRestart: false,
         default: {} as Record<string, CustomProviderDefinition>,
         description:
-          'User-defined OpenAI-compatible providers (e.g. local vLLM / Ollama / llama.cpp servers, Groq, Fireworks, Anyscale, internal Azure deployments). Add via /provider add, remove via /provider remove. Built-in providers (gemini-* and openai) cannot be defined here. Each entry stores baseUrl, displayName, optional defaultModel, optional defaultContextLimit, and optional apiKeyEnvVar (empty means unauthenticated). API keys themselves live in the OS keychain — never in this file.',
+          'User-defined OpenAI-compatible providers (e.g. local vLLM / Ollama / llama.cpp servers, Groq, Fireworks, Anyscale, internal Azure deployments). Add via /provider add, remove via /provider remove. Built-in providers (gemini-* and openai) cannot be defined here. Each entry stores baseUrl, displayName, optional defaultModel, optional defaultContextLimit, optional apiKeyEnvVar (empty means unauthenticated), and optional wireFormat (openai-chat | openai-responses; defaults to openai-chat). API keys themselves live in the OS keychain — never in this file.',
         showInDialog: false,
         mergeStrategy: MergeStrategy.SHALLOW_MERGE,
         additionalProperties: {

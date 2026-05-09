@@ -293,14 +293,61 @@ export class BaseLlmClient {
       additionalProperties,
     } = options;
 
+    // --- LOCAL FORK ADDITION (Phase 2.4.9: route utility calls through
+    //     active custom/OpenAI-compat provider) ---
+    //
+    // Problem: every utility call (compression, loop detection,
+    // next-speaker check) passes a Gemini-alias model string such as
+    // 'chat-compression-default', 'loop-detection', or
+    // 'next-speaker-checker'. `applyModelSelection` resolves those
+    // aliases through `defaultModelConfigs.ts`, which maps them to
+    // concrete Gemini model ids (e.g. 'gemini-3-pro-preview',
+    // 'gemini-3-flash-preview'). When the active provider is an
+    // OpenAI-compat endpoint (OpenRouter, vLLM, direct OpenAI, etc.)
+    // `this.contentGenerator` is already a `LocalLlmContentGenerator`
+    // pointing at that endpoint — so the Gemini model id leaks into
+    // the request body as `"model": "gemini-3-pro-preview"`. The
+    // endpoint either rejects it (400) or routes to an unintended
+    // model.
+    //
+    // Fix: when `isLocalMode()`, bypass alias resolution and use the
+    // active provider's own model id. The rest of the pipeline
+    // (`GenerateContentConfig`, retry handling) is unaffected — only
+    // the `model` field in the request body changes.
+    //
+    // Caveats:
+    //   - isLocalMode() is keyed on wireFormat === 'openai-chat'. It
+    //     returns false for Gemini and openai-responses providers, so
+    //     those are unaffected.
+    //   - For openai-responses providers the same alias leakage exists
+    //     (compression sends 'chat-compression-default' → Gemini id)
+    //     but the compression 4-layer defense is already disabled for
+    //     that wire format (isLocalMode() gate), so in practice
+    //     compression never fires there. If that changes, this guard
+    //     will need widening to `isLocalMode() || wireFormat ===
+    //     'openai-responses'`.
+    //   - 'local-model' is the server-picks placeholder; forwarding it
+    //     is safe for bare vLLM/Ollama where the single loaded weight
+    //     is chosen by the server and any model string is ignored.
+    let overrideModel: string | undefined;
+    if (this.config.isLocalMode()) {
+      overrideModel = this.config.getLocalModel();
+    }
+
     const {
       model,
       config: generateContentConfig,
       maxAttempts: availabilityMaxAttempts,
-    } = applyModelSelection(this.config, modelConfigKey);
+    } = overrideModel
+      ? applyModelSelection(this.config, {
+          ...modelConfigKey,
+          model: overrideModel,
+        })
+      : applyModelSelection(this.config, modelConfigKey);
 
     let currentModel = model;
     let currentGenerateContentConfig = generateContentConfig;
+    // --- END LOCAL FORK ADDITION ---
 
     // Define callback to fetch context dynamically since active model may get updated during retry loop
     const getAvailabilityContext = createAvailabilityContextProvider(
@@ -317,11 +364,15 @@ export class BaseLlmClient {
         const activeModel = this.config.getActiveModel();
         if (activeModel !== initialActiveModel) {
           initialActiveModel = activeModel;
-          // Re-resolve config if model changed during retry
+          // Re-resolve config if model changed during retry.
+          // --- LOCAL FORK ADDITION (Phase 2.4.9) ---
+          // Keep the local-model override pinned during retries too.
+          const retryModel = overrideModel ?? activeModel;
+          // --- END LOCAL FORK ADDITION ---
           const { model: resolvedModel, generateContentConfig } =
             this.config.modelConfigService.getResolvedConfig({
               ...modelConfigKey,
-              model: activeModel,
+              model: retryModel,
             });
           currentModel = resolvedModel;
           currentGenerateContentConfig = generateContentConfig;

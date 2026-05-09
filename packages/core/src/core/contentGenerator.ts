@@ -24,6 +24,9 @@ import { LoggingContentGenerator } from './loggingContentGenerator.js';
 import { InstallationManager } from '../utils/installationManager.js';
 import { FakeContentGenerator } from './fakeContentGenerator.js';
 import { LocalLlmContentGenerator } from './localLlmContentGenerator.js';
+// --- LOCAL FORK ADDITION (Phase 2.4: OpenAI Responses API) ---
+import { OpenAIResponsesContentGenerator } from './openaiResponsesContentGenerator.js';
+// --- END LOCAL FORK ADDITION ---
 import { parseCustomHeaders } from '../utils/customHeaderUtils.js';
 import { determineSurface } from '../utils/surface.js';
 import { RecordingContentGenerator } from './recordingContentGenerator.js';
@@ -232,6 +235,98 @@ export async function createContentGenerator(
     const effective = gcConfig.getEffectiveProviderConfig?.();
     const envUrl = process.env['GEMINI_LOCAL_URL'];
     const envModel = process.env['GEMINI_LOCAL_MODEL'];
+
+    // Shared auth resolver for OpenAI-shaped providers (chat or
+    // responses).
+    //
+    // Phase 2.4.5 update — soft-gate behavior:
+    //
+    //   - `requiresApiKey: true`  (built-in `openai`, `openai-responses`,
+    //     and any custom provider declared with --env): the user MUST
+    //     have a key configured; we throw an actionable error if none is
+    //     found, since the upstream will 401 anyway and the early throw
+    //     gives a much friendlier message than a raw HTTP error.
+    //
+    //   - `requiresApiKey: false`: optimistically try the credential
+    //     resolver; if a key has been saved (keychain or env var) we
+    //     send it as a Bearer header — covers users who added a custom
+    //     provider with `/provider add` (no --env flag) and later did
+    //     `/provider set <id> key ...`. If no key is found we return
+    //     `undefined` so genuinely-no-auth local servers (bare vLLM,
+    //     llama.cpp, ollama) keep their byte-identical no-Authorization
+    //     request shape. NEVER throws on this path — the user opted
+    //     into "not required" by virtue of not declaring an env var,
+    //     so we trust them.
+    //
+    //   - No active provider: returns `undefined`.
+    const resolveOpenAIAuth = async (): Promise<
+      { apiKey?: string; extraHeaders?: Record<string, string> } | undefined
+    > => {
+      if (!effective) return undefined;
+      const providerId = effective.providerId;
+      const { resolveProviderApiKey } = await import(
+        '../providers/providerCredentialStorage.js'
+      );
+      let resolved;
+      try {
+        resolved = gcConfig.getActiveProviderResolved?.();
+      } catch (err: unknown) {
+        const reason = err instanceof Error ? err.message : String(err);
+        if (effective.requiresApiKey) {
+          throw new Error(`Hosted provider configuration error: ${reason}`);
+        }
+        return undefined;
+      }
+      if (!resolved) {
+        if (effective.requiresApiKey) {
+          throw new Error(
+            `Hosted provider '${providerId}' could not be resolved. ` +
+              `Run /provider list to see configured providers.`,
+          );
+        }
+        return undefined;
+      }
+      const key = await resolveProviderApiKey(providerId);
+      if (!key) {
+        if (effective.requiresApiKey) {
+          throw new Error(
+            `No API key configured for provider '${providerId}'. ` +
+              `Set the ${resolved.definition.apiKeyEnvVar} env var, ` +
+              `or run /provider set ${providerId} key.`,
+          );
+        }
+        // requiresApiKey: false AND no key found — preserve the
+        // no-Authorization request shape that local servers expect.
+        return undefined;
+      }
+      const headers = {
+        ...resolved.definition.buildAuthHeaders(key),
+        ...(resolved.definition.buildExtraHeaders?.() ?? {}),
+      };
+      // The Authorization header is set inside fetchWithTimeout from
+      // `apiKey`; pass extra headers (e.g. OpenRouter's HTTP-Referer)
+      // through so they ride every request.
+      delete headers['Authorization'];
+      const extraHeaders = Object.keys(headers).length ? headers : undefined;
+      return { apiKey: key, extraHeaders };
+    };
+
+    // --- LOCAL FORK ADDITION (Phase 2.4: OpenAI Responses API) ---
+    // Branch comes BEFORE the openai-chat branch so the env-var
+    // fallback path (GEMINI_LOCAL_URL) keeps routing into chat-completions
+    // — the legacy local-LLM contract is chat-only, and the env-var
+    // fallback exists exclusively for that contract.
+    if (effective && effective.wireFormat === 'openai-responses') {
+      const url = effective.url || '';
+      const model = effective.model || 'gpt-5';
+      const auth = await resolveOpenAIAuth();
+      return new LoggingContentGenerator(
+        new OpenAIResponsesContentGenerator(url, model, gcConfig, auth),
+        gcConfig,
+      );
+    }
+    // --- END LOCAL FORK ADDITION ---
+
     const isOpenAiCompat =
       (effective && effective.wireFormat === 'openai-chat') || !!envUrl;
     if (isOpenAiCompat) {
@@ -241,53 +336,10 @@ export async function createContentGenerator(
       // Hosted providers (requiresApiKey: true) resolve a Bearer token
       // from env or keychain. Local presets skip the resolver entirely so
       // localhost traffic never carries an Authorization header.
-      let apiKey: string | undefined;
-      let extraHeaders: Record<string, string> | undefined;
-      if (effective?.requiresApiKey) {
-        const providerId = effective.providerId;
-        const { resolveProviderApiKey } = await import(
-          '../providers/providerCredentialStorage.js'
-        );
-        let resolved;
-        try {
-          resolved = gcConfig.getActiveProviderResolved?.();
-        } catch (err: unknown) {
-          const reason = err instanceof Error ? err.message : String(err);
-          throw new Error(`Hosted provider configuration error: ${reason}`);
-        }
-        if (!resolved) {
-          throw new Error(
-            `Hosted provider '${providerId}' could not be resolved. ` +
-              `Run /provider list to see configured providers.`,
-          );
-        }
-        const key = await resolveProviderApiKey(providerId);
-        if (!key) {
-          throw new Error(
-            `No API key configured for provider '${providerId}'. ` +
-              `Set the ${resolved.definition.apiKeyEnvVar} env var, ` +
-              `or run /provider set ${providerId} key.`,
-          );
-        }
-        apiKey = key;
-        const headers = {
-          ...resolved.definition.buildAuthHeaders(key),
-          ...(resolved.definition.buildExtraHeaders?.() ?? {}),
-        };
-        // The Authorization header is set inside fetchWithTimeout from
-        // `apiKey`; pass extra headers (e.g. OpenRouter's HTTP-Referer)
-        // through so they ride every request.
-        delete headers['Authorization'];
-        extraHeaders = Object.keys(headers).length ? headers : undefined;
-      }
+      const auth = await resolveOpenAIAuth();
 
       return new LoggingContentGenerator(
-        new LocalLlmContentGenerator(
-          url,
-          model,
-          gcConfig,
-          apiKey || extraHeaders ? { apiKey, extraHeaders } : undefined,
-        ),
+        new LocalLlmContentGenerator(url, model, gcConfig, auth),
         gcConfig,
       );
     }

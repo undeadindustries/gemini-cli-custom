@@ -105,7 +105,17 @@ export const UserIdentity: React.FC<UserIdentityProps> = ({ config }) => {
           </Text>
           {/* --- END LOCAL FORK ADDITION --- */}
           <Text color={theme.text.secondary} wrap="truncate-end">
-            {'Model: ' + (effective.model || '(not set)')}
+            {/* --- LOCAL FORK ADDITION (Phase 2.4.3: friendlier placeholder) --- */}
+            {/* 'local-model' is the internal placeholder used when a provider
+                has no defaultModel set and the user hasn't configured one.
+                Render it as '(server picks)' so the user understands that
+                the server side will choose, rather than thinking the literal
+                string 'local-model' is the model name. */}
+            {'Model: ' +
+              (!effective.model || effective.model === 'local-model'
+                ? '(server picks)'
+                : effective.model)}
+            {/* --- END LOCAL FORK ADDITION --- */}
           </Text>
           <Text color={theme.text.secondary} wrap="truncate-end">
             {'Context: ' + effective.contextLimit.toLocaleString() + ' tokens'}
@@ -130,7 +140,53 @@ export const UserIdentity: React.FC<UserIdentityProps> = ({ config }) => {
                 </Text>
               )}
             </>
+          ) : effective.wireFormat === 'openai-responses' ? (
+            // --- LOCAL FORK ADDITION (Phase 2.4: OpenAI Responses API) ---
+            // Mirrors the openai-chat block but swaps Parser/Prompt for
+            // the Responses-only knobs (reasoningEffort + chaining).
+            <>
+              <Text color={theme.text.secondary} wrap="truncate-end">
+                {'URL: ' + (effective.url || '(not set)')}
+              </Text>
+              {(() => {
+                const session = config.getSessionReasoningOverride?.();
+                const persisted = effective.reasoningEffort;
+                const resolved = session ?? persisted;
+                const source = resolved
+                  ? session
+                    ? ' (session override)'
+                    : ' (provider default)'
+                  : '';
+                return (
+                  <Text color={theme.text.secondary} wrap="truncate-end">
+                    {'Reasoning: ' + (resolved ?? '(server default)') + source}
+                  </Text>
+                );
+              })()}
+              {(() => {
+                const lastId = config.getLastResponseId?.();
+                const onOff = effective.useResponseChaining ? 'on' : 'off';
+                const idTag =
+                  effective.useResponseChaining && lastId
+                    ? ' (response_' + lastId.slice(0, 8) + '\u2026)'
+                    : '';
+                return (
+                  <Text color={theme.text.secondary} wrap="truncate-end">
+                    {'Chaining: ' + onOff + idTag}
+                  </Text>
+                );
+              })()}
+              {effective.requiresApiKey && (
+                <Text color={theme.text.secondary} wrap="truncate-end">
+                  {'API key: from ' +
+                    (effective.apiKeyEnvVar
+                      ? '$' + effective.apiKeyEnvVar + ' or keychain'
+                      : 'keychain')}
+                </Text>
+              )}
+            </>
           ) : (
+            // --- END LOCAL FORK ADDITION ---
             // wireFormat === 'gemini' — render the auth method instead
             // of URL / parser fields. The upstream SDK owns the wire.
             <Text color={theme.text.secondary} wrap="truncate-end">

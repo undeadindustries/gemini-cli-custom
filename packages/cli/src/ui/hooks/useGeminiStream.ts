@@ -1746,6 +1746,17 @@ export const useGeminiStream = (
               }
             } catch (error: unknown) {
               spanMetadata.error = error;
+              // --- LOCAL FORK ADDITION (Phase 2.4: OpenAI Responses API) ---
+              // Belt-and-suspenders: any streaming error invalidates the
+              // server-side chained state from this client's POV. The
+              // OpenAIResponsesContentGenerator already clears its own
+              // lastResponseId in its internal catch handlers, but this
+              // covers the case where the error escapes from a
+              // higher-level layer (validation, auth, abort) before the
+              // generator's own cleanup runs. No-op for chat / gemini
+              // wire formats (the field is never set there).
+              config.clearLastResponseId?.();
+              // --- END LOCAL FORK ADDITION ---
               if (error instanceof UnauthorizedError) {
                 onAuthError('Session expired or is unauthorized.');
               } else if (

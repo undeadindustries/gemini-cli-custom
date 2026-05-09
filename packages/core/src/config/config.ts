@@ -1948,14 +1948,21 @@ export class Config implements McpContext, AgentLoopContext {
       );
       this.contentGeneratorConfig = localConfig;
       this.baseLlmClient = new BaseLlmClient(this.contentGenerator, this);
-      // --- LOCAL FORK ADDITION (Phase 2.1.1) ---
+      // --- LOCAL FORK ADDITION (Phase 2.1.1, refined Phase 2.4.3) ---
       // Provider-mode: surface the resolved model id (e.g. gpt-4o) into
       // config.model so the footer + /model dialog show the right value.
-      // Skip the 'local-model' placeholder used by local presets that have
-      // no user-supplied model — that placeholder isn't meaningful in the
-      // footer and the existing model-discovery path will populate it.
+      //
+      // Phase 2.4.3 fix: always call setModel(), including when the value
+      // is the 'local-model' placeholder. Previously we skipped that case,
+      // which meant switching FROM a real-model provider (e.g. OpenRouter
+      // → openai/gpt-4o) TO a no-default provider (bare vLLM, or any
+      // custom provider added without --model) left the footer / identity
+      // block displaying the OLD provider's model. Always overwriting
+      // keeps config.model in sync with the active provider; the UI layer
+      // is responsible for rendering 'local-model' nicely (see Footer
+      // and UserIdentity).
       const eff = this.getEffectiveProviderConfig();
-      if (eff && eff.model && eff.model !== 'local-model') {
+      if (eff && eff.model) {
         this.setModel(eff.model, true);
       }
       // --- END LOCAL FORK ADDITION ---
@@ -3392,7 +3399,13 @@ export class Config implements McpContext, AgentLoopContext {
         providerId: string;
         requiresApiKey: boolean;
         apiKeyEnvVar: string;
-        wireFormat: 'openai-chat' | 'gemini' | 'anthropic-messages';
+        wireFormat:
+          | 'openai-chat'
+          // --- LOCAL FORK ADDITION (Phase 2.4: OpenAI Responses API) ---
+          | 'openai-responses'
+          // --- END LOCAL FORK ADDITION ---
+          | 'gemini'
+          | 'anthropic-messages';
         authType: AuthType;
         // --- LOCAL FORK ADDITION (Phase 2.3.1: per-provider sampler) ---
         // `undefined` means "user has not set one — let the server
@@ -3404,6 +3417,30 @@ export class Config implements McpContext, AgentLoopContext {
         // `undefined` means "not set at this level — fall back to
         // global legacy default inside getLocalToolCallParseMode()".
         toolCallParsing?: 'strict' | 'lenient' | 'loose';
+        // --- END LOCAL FORK ADDITION ---
+        // --- LOCAL FORK ADDITION (Phase 2.4: OpenAI Responses API) ---
+        /**
+         * Resolved reasoning effort (Responses-format only). `undefined`
+         * means "server decides"; the request builder omits the
+         * `reasoning` field. Session-override layer in
+         * `getReasoningEffort()` overlays this at request time.
+         */
+        reasoningEffort?: 'minimal' | 'low' | 'medium' | 'high';
+        /**
+         * Resolved chaining opt-in (Responses-format only). When `true`
+         * the request builder sends `previous_response_id` after the
+         * first turn instead of replaying the full input.
+         */
+        useResponseChaining: boolean;
+        // --- END LOCAL FORK ADDITION ---
+        // --- LOCAL FORK ADDITION (Phase 2.4.7: system-prompt override) ---
+        /**
+         * Resolved system-prompt override. Empty string means "use the
+         * upstream Gemini-CLI system prompt as-is." Any non-empty value
+         * is substituted at translate time inside the OpenAI-compat
+         * generators.
+         */
+        systemPromptOverride: string;
         // --- END LOCAL FORK ADDITION ---
       }
     | undefined {
@@ -3442,6 +3479,13 @@ export class Config implements McpContext, AgentLoopContext {
           // --- END LOCAL FORK ADDITION ---
           // --- LOCAL FORK ADDITION (Phase 2.3.2: per-provider tool-call parser) ---
           toolCallParsing: r.toolCallParsing,
+          // --- END LOCAL FORK ADDITION ---
+          // --- LOCAL FORK ADDITION (Phase 2.4: OpenAI Responses API) ---
+          reasoningEffort: r.reasoningEffort,
+          useResponseChaining: r.useResponseChaining,
+          // --- END LOCAL FORK ADDITION ---
+          // --- LOCAL FORK ADDITION (Phase 2.4.7: system-prompt override) ---
+          systemPromptOverride: r.systemPromptOverride,
           // --- END LOCAL FORK ADDITION ---
         };
       } catch {
@@ -3486,6 +3530,16 @@ export class Config implements McpContext, AgentLoopContext {
         // Legacy path has no per-provider setting; leave undefined so
         // getLocalToolCallParseMode() uses the global legacy value.
         toolCallParsing: undefined,
+        // --- END LOCAL FORK ADDITION ---
+        // --- LOCAL FORK ADDITION (Phase 2.4: OpenAI Responses API) ---
+        // Legacy `local.*` users only ever spoke chat-completions, so
+        // the Responses-only knobs default off / undefined here.
+        reasoningEffort: undefined,
+        useResponseChaining: false,
+        // --- END LOCAL FORK ADDITION ---
+        // --- LOCAL FORK ADDITION (Phase 2.4.7: system-prompt override) ---
+        // Legacy local users want upstream behavior — empty = no override.
+        systemPromptOverride: '',
         // --- END LOCAL FORK ADDITION ---
       };
     }
@@ -3652,6 +3706,119 @@ export class Config implements McpContext, AgentLoopContext {
    */
   getLocalRepetitionPenalty(): number | null {
     return this.localRepetitionPenalty;
+  }
+  // --- END LOCAL FORK ADDITION ---
+
+  // --- LOCAL FORK ADDITION (Phase 2.4: OpenAI Responses API) ---
+  /**
+   * Session-only override for the active provider's reasoning effort,
+   * set by `/reasoning <level>` and cleared by `/reasoning clear` or a
+   * provider switch. Lives entirely in process memory — never persisted
+   * to settings.json (use `/reasoning save <level>` for that).
+   *
+   * Stored as a free string and validated at the setter so a future
+   * server adds (e.g. `extreme`) don't require a Config field type bump.
+   */
+  private sessionReasoningOverride?: 'minimal' | 'low' | 'medium' | 'high';
+  /**
+   * Last `response.id` returned by the OpenAI Responses endpoint when
+   * stateful chaining is enabled (`useResponseChaining: true`). Used as
+   * `previous_response_id` on the next request so the server reuses
+   * cached server-side state instead of reprocessing the full input.
+   *
+   * Cleared by /clear, /compress, history truncation, error responses,
+   * provider switches, and refreshAuth — anywhere our client-owned
+   * history view would diverge from the server's view. Stateless
+   * default + invalidation-on-divergence keeps the blast radius of a
+   * desync at one wasted turn (the server returns 400 / model returns
+   * confused output, the CLI hard-resends full history next turn).
+   */
+  private lastResponseId?: string;
+
+  /**
+   * Returns the session reasoning override or `undefined` if no
+   * override is active. Consumers should prefer
+   * {@link getReasoningEffort} which collapses the resolution chain.
+   */
+  getSessionReasoningOverride():
+    | 'minimal'
+    | 'low'
+    | 'medium'
+    | 'high'
+    | undefined {
+    return this.sessionReasoningOverride;
+  }
+
+  /**
+   * Sets the session-only reasoning override. Pass `undefined` to
+   * clear. The CLI's /reasoning <level> command writes here; the
+   * dialog's persistent-edit path writes to settings.json instead.
+   */
+  setSessionReasoningOverride(
+    level: 'minimal' | 'low' | 'medium' | 'high' | undefined,
+  ): void {
+    this.sessionReasoningOverride = level;
+  }
+
+  /**
+   * Clears the session reasoning override. Equivalent to
+   * `setSessionReasoningOverride(undefined)`; named separately to keep
+   * the intent obvious at call sites (e.g. `/reasoning clear`).
+   */
+  clearSessionReasoningOverride(): void {
+    this.sessionReasoningOverride = undefined;
+  }
+
+  /**
+   * Resolved reasoning effort for the active provider, applying the
+   * session override on top of the per-provider persistent value.
+   *
+   * Resolution order:
+   *   1. Session override (set by `/reasoning <level>`)
+   *   2. Per-provider setting (`providers.<id>.reasoningEffort`)
+   *   3. `undefined` (server decides — OpenAI defaults to `medium`)
+   *
+   * Returns `undefined` when the active provider's wireFormat is not
+   * `'openai-responses'` so the request builder never sets
+   * `reasoning.effort` on a chat-completions or Gemini request.
+   */
+  getReasoningEffort(): 'minimal' | 'low' | 'medium' | 'high' | undefined {
+    const eff = this.getEffectiveProviderConfig();
+    if (!eff || eff.wireFormat !== 'openai-responses') {
+      return undefined;
+    }
+    return this.sessionReasoningOverride ?? eff.reasoningEffort;
+  }
+
+  /**
+   * Returns the most recent `response.id` from the active Responses
+   * endpoint, or `undefined` if there is none yet (first turn after
+   * launch / clear / compress / error).
+   */
+  getLastResponseId(): string | undefined {
+    return this.lastResponseId;
+  }
+
+  /**
+   * Stores a `response.id` for use as `previous_response_id` on the
+   * next chained request. Called by
+   * {@link OpenAIResponsesContentGenerator} on `response.completed`.
+   */
+  setLastResponseId(id: string | undefined): void {
+    if (id && id.length > 0) {
+      this.lastResponseId = id;
+    } else {
+      this.lastResponseId = undefined;
+    }
+  }
+
+  /**
+   * Drops the stored `response.id`. Called from `/clear`, `/compress`,
+   * `historyTruncation`, and any error path so the next chained request
+   * falls back to sending the full input.
+   */
+  clearLastResponseId(): void {
+    this.lastResponseId = undefined;
   }
   // --- END LOCAL FORK ADDITION ---
 
@@ -3949,6 +4116,17 @@ export class Config implements McpContext, AgentLoopContext {
       if (next !== this.providersActive) {
         this.providersActive = next || undefined;
         activeChanged = true;
+        // --- LOCAL FORK ADDITION (Phase 2.4: OpenAI Responses API) ---
+        // A provider switch invalidates both the session reasoning
+        // override (it's scoped to the provider that was active when
+        // /reasoning was issued) and any stored Responses chaining id
+        // (the new provider has no record of it server-side, and even
+        // if it's the same vendor the stored id may belong to a
+        // different model). Stateless re-send next turn; one wasted
+        // request worst case.
+        this.sessionReasoningOverride = undefined;
+        this.lastResponseId = undefined;
+        // --- END LOCAL FORK ADDITION ---
       }
     }
     if (updates.setConfig) {

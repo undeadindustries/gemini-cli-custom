@@ -318,11 +318,44 @@ Slash commands provide meta-level control over the CLI itself.
     - **Description:** Hot-reload one field on a provider. `model` and `baseUrl`
       accept any non-empty string. `key` saves an API key to the OS keychain —
       note the key briefly appears in your terminal scrollback when typed
-      inline; clear it with `Ctrl+L` afterwards.
+      inline; clear it with `Ctrl+L` afterwards. **Phase 2.4:** on
+      `openai-responses` providers, `reasoningEffort` and `useResponseChaining`
+      are also accepted; the command refuses these fields on `openai-chat` /
+      `gemini` providers.
     - **Usage:**
       - `/provider set <id> model <model-name>`
       - `/provider set <id> baseUrl <https-url>`
       - `/provider set <id> key <api-key>`
+      - `/provider set <id> reasoningEffort <minimal|low|medium|high>` (Phase
+        2.4, Responses-only)
+      - `/provider set <id> useResponseChaining <true|false>` (Phase 2.4,
+        Responses-only)
+      - `/provider set <id> systemPromptOverride "<text>"` (Phase 2.4.7,
+        OpenAI-compat only) Replaces the upstream Gemini-CLI system preamble
+        wholesale. Useful when the underlying provider is not Gemini and
+        self-identifies as Google's model. Empty string clears the override.
+        Note: this drops tool-use guidance and sandbox reminders along with the
+        identity bits; opt in deliberately. GEMINI.md / project memory is
+        unaffected.
+  - **`models`**:
+    - **Description:** Fetch the live model list from any OpenAI-compatible
+      provider. When the provider returns pricing data (e.g. OpenRouter), the
+      price per million prompt/completion tokens is shown next to each model.
+      Use `--max-price <n>` to filter by prompt price (USD per million tokens);
+      pass `0` for free-only models.
+    - **Usage:**
+      - `/provider models` (uses the active provider)
+      - `/provider models <id>` (e.g. `/provider models openrouter`)
+      - `/provider models openrouter --max-price 0` (free models only)
+      - `/provider models openrouter --max-price 1` (≤ $1/M prompt tokens)
+  - **`add`**:
+    - **Description:** Register a new custom OpenAI-compatible provider. Custom
+      providers can target either the `openai-chat` (`/v1/chat/completions`) or
+      `openai-responses` (`/v1/responses`) wire format. **Phase 2.4** added the
+      `--wire-format` flag (defaults to `openai-chat` for back-compat).
+    - **Usage:**
+      - `/provider add <id> <baseUrl> [<displayName>] [<envVar>]`
+      - `/provider add --wire-format <openai-chat|openai-responses> <id> <baseUrl> [<displayName>] [<envVar>]`
   - **`remove`**:
     - **Description:** Clear the per-provider settings overrides AND the
       keychain entry for that provider. The provider remains in the registry;
@@ -436,6 +469,30 @@ wins.
     session's history and temporary files (chat recording, tool outputs). Useful
     for privacy or one-off tasks where you don't want to leave any traces.
   - **Usage:** `/quit --delete` or `/exit --delete`
+
+### `/reasoning` (Phase 2.4 — local fork)
+
+- **Description:** Inspect or override the OpenAI Responses API
+  `reasoning.effort` knob for the active provider. Only meaningful when the
+  active provider's `wireFormat` is `openai-responses`; against any other wire
+  format the command prints an actionable message and makes no changes. The
+  session override takes precedence over the persisted
+  `providers.<id>.reasoningEffort` value, but is cleared on CLI exit unless
+  `save` is used.
+- **Sub-commands:**
+  - `/reasoning show` — Print the effective effort and where it came from
+    (`session override`, `provider default`, or `unset (server default)`).
+  - `/reasoning <minimal|low|medium|high>` — Set a session-only override.
+  - `/reasoning clear` — Drop the session override (falls back to the persisted
+    setting).
+  - `/reasoning save <minimal|low|medium|high>` — Persist the level to
+    `providers.<id>.reasoningEffort` in `settings.json` and apply it as the
+    session override for the current run.
+- **Usage:**
+  - `/reasoning show`
+  - `/reasoning low`
+  - `/reasoning save high`
+  - `/reasoning clear`
 
 ### `/restore`
 

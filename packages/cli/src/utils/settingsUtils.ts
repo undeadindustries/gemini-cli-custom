@@ -50,10 +50,12 @@ function clearFlattenedSchema() {
 // --- LOCAL FORK ADDITION (Phase 2.3 custom-provider schema aliases) ---
 /**
  * Phase 2.3 — register `providers.<customId>.*` aliases in the flattened
- * schema cache, cloned from `providers.openai.*`. Custom providers are
- * always OpenAI-compat by definition (see `customToProviderDefinition`),
- * so they share the exact same set of editable settings as the built-in
- * OpenAI entry; the only thing that changes is the storage prefix.
+ * schema cache, cloned from the right wire-format-specific source block
+ * (`providers.openai.*` for `openai-chat` providers, or
+ * `providers.openai-responses.*` for `openai-responses` providers, see
+ * Phase 2.4). Custom providers share the exact same set of editable
+ * settings as their corresponding built-in entry; only the storage
+ * prefix changes.
  *
  * Without this aliasing, the settings dialog (and anything else that
  * looks up metadata via `getSettingDefinition`) would return undefined
@@ -65,23 +67,59 @@ function clearFlattenedSchema() {
  * The function exists ONLY for the local fork — upstream gemini-cli has
  * no equivalent concept of user-defined OpenAI-compat providers.
  *
- * Built-in ids (`openai`, `gemini-*`) are skipped — they either already
- * have schema entries (openai) or intentionally expose no editable
- * settings (gemini-*).
+ * Accepts either a plain string array (legacy callers — assumes every id
+ * speaks `openai-chat`) OR a Record<id, { wireFormat? }> (Phase 2.4
+ * caller — picks the right source block per id). Mixing is safe: any
+ * unknown / missing wireFormat falls back to `openai-chat`.
+ *
+ * Built-in ids (`openai`, `openai-responses`, `gemini-*`) are skipped —
+ * they either already have schema entries or intentionally expose no
+ * editable settings.
  */
 export function registerCustomProviderSchemaAliases(
-  customIds: readonly string[],
+  customIdsOrDefs:
+    | readonly string[]
+    | Readonly<Record<string, { wireFormat?: string } | undefined | null>>,
 ): void {
   const schema = getFlattenedSchema();
-  const sourcePrefix = 'providers.openai.';
-  const sourceKeys = Object.keys(schema).filter((k) =>
-    k.startsWith(sourcePrefix),
+  const chatPrefix = 'providers.openai.';
+  const responsesPrefix = 'providers.openai-responses.';
+  const chatSourceKeys = Object.keys(schema).filter((k) =>
+    k.startsWith(chatPrefix),
   );
-  if (sourceKeys.length === 0) return;
-  for (const id of customIds) {
+  const responsesSourceKeys = Object.keys(schema).filter((k) =>
+    k.startsWith(responsesPrefix),
+  );
+  // If neither source block exists yet, bail. The chat block has been
+  // present since Phase 2.0; the responses block since Phase 2.4.
+  if (chatSourceKeys.length === 0 && responsesSourceKeys.length === 0) return;
+
+  // Normalize input shape into a flat list of [id, wireFormat] pairs.
+  const entries: Array<[string, 'openai-chat' | 'openai-responses']> = [];
+  if (Array.isArray(customIdsOrDefs)) {
+    for (const id of customIdsOrDefs) {
+      if (typeof id === 'string') entries.push([id, 'openai-chat']);
+    }
+  } else {
+    for (const [id, def] of Object.entries(customIdsOrDefs)) {
+      const wf =
+        def && def.wireFormat === 'openai-responses'
+          ? 'openai-responses'
+          : 'openai-chat';
+      entries.push([id, wf]);
+    }
+  }
+
+  for (const [id, wf] of entries) {
     if (!id) continue;
     if (id === 'openai') continue;
+    if (id === 'openai-responses') continue;
     if (id.startsWith('gemini-')) continue;
+    const sourcePrefix =
+      wf === 'openai-responses' ? responsesPrefix : chatPrefix;
+    const sourceKeys =
+      wf === 'openai-responses' ? responsesSourceKeys : chatSourceKeys;
+    if (sourceKeys.length === 0) continue;
     const targetPrefix = `providers.${id}.`;
     for (const sourceKey of sourceKeys) {
       const aliasKey = targetPrefix + sourceKey.slice(sourcePrefix.length);

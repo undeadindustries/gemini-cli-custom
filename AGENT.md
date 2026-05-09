@@ -985,34 +985,32 @@ Gemini API via getBaseLlmClient(). Observed in a real 17h session:
   (LoopDetectionService) This burns Gemini API quota and prevents fully-local
   operation.
 
-TODO 2.1-A — Local compression routing (HIGH PRIORITY) Route
-chatCompressionService through the local LLM (or a configurable "utility model")
-instead of getBaseLlmClient() when in local mode.
+DONE — Phase 2.4.9: Local compression routing (shipped 2026-05):
 
-Design:
+Root cause confirmed: every utility LLM call (chatCompressionService,
+LoopDetectionService, nextSpeakerChecker) flows through BaseLlmClient with a
+Gemini alias model key such as 'chat-compression-default', 'loop-detection', or
+'next-speaker-checker'. defaultModelConfigs.ts resolves those aliases to concrete
+Gemini model ids (e.g. 'gemini-3-pro-preview', 'gemini-3-flash-preview'). When
+the active provider is an OpenAI-compat endpoint the alias resolution leaks
+Gemini model ids into the request body, which the endpoint may reject or
+misroute.
 
-- Add settings: local.compressionModel (URL + model for a separate compression
-  endpoint, optional) and local.compressionModelFallback: 'gemini' |
-  'local-main' | 'truncate-only' (default: 'local-main').
-- In chatCompressionService.ts, check config.isLocalMode(). If true:
-  - If local.compressionModel is set → call that endpoint directly.
-  - Else if fallback='local-main' → call the same local URL/model as main.
-  - Else if fallback='truncate-only' → skip LLM summarization entirely; just
-    drop oldest turns (safe fallback, zero API cost).
-  - Else fallback='gemini' → current behavior (explicit opt-in).
-- Expose knob in LocalDialog.tsx under the "Smart Context" section.
-- Wrap in isLocalMode() guard so upstream behavior is unchanged. Touches:
-  packages/core/src/context/chatCompressionService.ts,
-  packages/core/src/config/config.ts (new getters),
-  packages/cli/src/config/settingsSchema.ts,
-  packages/cli/src/ui/components/LocalDialog.tsx
+Fix (single change point): in BaseLlmClient._generateWithRetry, when
+config.isLocalMode() is true, read config.getLocalModel() and pass that as the
+model to applyModelSelection instead of the alias. The alias table maps unknown
+ids through unchanged (resolveAliasChain falls into the identity branch), so the
+provider's own model string is forwarded verbatim to the endpoint. The guard is
+keyed on wireFormat === 'openai-chat' via isLocalMode(), so Gemini and
+openai-responses providers are unaffected.
 
-TODO 2.1-B — Local loop detection routing (LOW PRIORITY, simple) Route
-LoopDetectionService through the local LLM when in local mode. Same pattern as
-2.1-A: check isLocalMode(), use local endpoint or skip. The loop detector fires
-rarely (1 call per session is typical) so this is low urgency but completes the
-"fully local" goal. Touches: packages/core/src/core/client.ts
-(LoopDetectionService init), packages/core/src/config/config.ts
+New tests: 2 tests added to baseLlmClient.test.ts (Local-mode model override).
+
+TODO 2.1-B — Local loop detection routing (LOW PRIORITY, LIKELY ALREADY FIXED)
+The same fix in BaseLlmClient._generateWithRetry covers LoopDetectionService and
+nextSpeakerChecker automatically (both call getBaseLlmClient().generateJson).
+Verify with GEMINI_WIRE_LOG that loop-detection no longer leaks Gemini model
+ids. If confirmed, mark done. Touches: none (covered by Phase 2.4.9).
 
 DONE — Phase 2.1.1 Unify Provider/Local Auth Mode (shipped):
 
@@ -1582,3 +1580,616 @@ Explicit non-goals carried forward to a later phase:
   should not paint itself into a corner that would block this. Gemini providers
   will be excluded from the utility-router UI for the same reason as the rest of
   Phase 2.3 — Gemini uses upstream defaults.
+
+---
+
+DONE — Phase 2.3.1 Provider UX polish (shipped):
+
+A collection of polish and correctness fixes on top of Phase 2.3:
+
+1. **Per-provider `temperature` setting.** `temperature` was dropped during
+   the Phase 2.2 `local.*` migration because the schema entry was global.
+   Promoted to a first-class per-provider field:
+   - `ProviderInstanceConfig` + `ResolvedProvider` gain `temperature?: number`.
+   - `'temperature'` added to `OPENAI_COMPAT_SETTING_KEYS`.
+   - Validation: 0–2 finite range, rejects NaN/Infinity/negatives.
+   - `resolveProvider()` passes `temperature` through (undefined = "server decides").
+   - `getEffectiveProviderConfig()` return type extended with `temperature?: number`.
+   - `getLocalTemperature()` prefers per-provider value over legacy `localTemperature`.
+   - `providers.openai.temperature` schema entry (`type: number`, `default: undefined`,
+     `showInDialog: false`).
+   - `migrateLegacyLocalSettings.ts` — `local.temperature` now migrates to
+     `providers.local-vllm.temperature` (was a dropped key before this fix).
+   - `ProviderDialog.tsx` — `'temperature'` added to `HOT_RELOAD_FIELDS` and the
+     `applyHotReload` switch's numeric branch.
+
+2. **`GEMINI_PROVIDER` env-override indicator in footer.** When the
+   `GEMINI_PROVIDER` env var is set, `UserIdentity.tsx` appends
+   `[⚠ overridden by $GEMINI_PROVIDER]` to the Active provider line so users
+   who set the env var and then try to switch via `/provider` aren't confused
+   when the switch doesn't take effect on restart.
+
+3. **Set API key via dialog.** The `/provider` menu now shows a "Set API key"
+   item when the active provider has `requiresApiKey: true`. Selecting it opens
+   a new `SetKeyScreen` inside `ProviderDialog.tsx` that accepts the key,
+   validates it's non-empty, calls `saveProviderApiKey(providerId, key)` to
+   store it in the OS keychain, and warns the user to clear terminal scrollback.
+   Env-var precedence is stated clearly: if `$OPENAI_API_KEY` (or the relevant
+   env var) is also set, it overrides the keychain value.
+
+4. **Custom provider edit dialog schema aliases.** Before this fix, editing a
+   custom provider (e.g. `local-vllm`) opened with "No matches found" because
+   the flattened schema only contained `providers.openai.*` keys, not
+   `providers.local-vllm.*`. A new exported function
+   `registerCustomProviderSchemaAliases(customIds: string[])` in
+   `settingsUtils.ts` clones all `providers.openai.*` schema entries under
+   `providers.<customId>.*` into the flattened schema map. Called in the
+   `EditScreen` component before it queries keys. Idempotent on repeated opens.
+
+Files touched in 2.3.1:
+
+- `packages/core/src/providers/providerRegistry.ts` (temperature in allowlist,
+  ProviderInstanceConfig, ResolvedProvider, validation, resolveProvider)
+- `packages/core/src/config/config.ts` (getEffectiveProviderConfig return type,
+  temperature passthrough, getLocalTemperature priority)
+- `packages/cli/src/config/settingsSchema.ts` (providers.openai.temperature entry)
+- `packages/cli/src/config/migrateLegacyLocalSettings.ts`
+  (MIGRATED_KEY_MAPPINGS gains temperature)
+- `packages/cli/src/ui/components/UserIdentity.tsx` (env-override indicator)
+- `packages/cli/src/ui/components/ProviderDialog.tsx` (HOT_RELOAD_FIELDS,
+  applyHotReload, SetKeyScreen, Set API key menu item, set-key screen routing)
+- `packages/cli/src/utils/settingsUtils.ts`
+  (registerCustomProviderSchemaAliases)
+- `packages/core/src/config/getEffectiveProviderConfig.test.ts` (updated for
+  custom provider resolution)
+- `packages/cli/src/ui/components/ProviderDialog.test.tsx` (new, 9 tests)
+
+---
+
+DONE — Phase 2.3.2 Provider persistence + tool-call parser UX (shipped):
+
+1. **Four persistence / removal bugs fixed:**
+
+   Bug 1 — Removing a custom provider re-created it on next restart. Root cause:
+   `handleRemoveCustom` cleared `providers.custom.<id>` but left the flat
+   `providers.<id>.*` block in `settings.json`. On next launch
+   `migrateLegacyLocalPresets` saw those orphan keys and re-created the entry.
+   Fix: a second `setSetting(SettingScope.User, 'providers.<id>', undefined)`
+   call after the custom map update; `setNestedProperty` assigns undefined,
+   `JSON.stringify` omits the key on the next save.
+
+   Bug 2 — Removing the active provider silently switched to `gemini-oauth`,
+   triggering unwanted Google OAuth. Fix: `handleRemoveCustom` now calls
+   `config.refreshProviderConfig({ active: null })` and persists
+   `providers.active = ''`, then returns `wasActive: boolean`. When `wasActive`
+   is true the dialog routes to the `switch` screen so the user picks from all
+   available providers instead of being auto-enrolled into Gemini.
+   `handleRemoveCustom` signature changed to `async (id): Promise<boolean>`.
+
+   Bug 3 — `/provider use <id>` lost its choice on restart. Fix: after
+   `config.refreshProviderConfig({ active: id })` the `use` action now calls
+   `context.services.settings.setValue(SettingScope.User, 'providers.active', id)`.
+
+   Bug 4 — `/provider set <id> model|baseUrl <value>` lost its value on restart.
+   Fix: after the in-memory `refreshProviderConfig` call, iterate
+   `Object.entries(patch)` and call `setValue` for each non-undefined field
+   under `providers.<id>.<field>`. Automatically covers future fields added to
+   the patch without extra wiring.
+
+   Files touched: `packages/cli/src/ui/components/ProviderDialog.tsx`
+   (handleRemoveCustom, RemoveScreen onConfirm routing),
+   `packages/cli/src/ui/commands/providerCommand.ts` (use + set subcommands).
+
+2. **`toolCallParsing` per-provider setting in edit dialog.** Previously only
+   existed as the global `local.toolCallParsing` legacy key. Now a first-class
+   per-provider field with `default: 'strict'` (safer than the old `lenient`
+   default):
+   - `'toolCallParsing'` added to `OPENAI_COMPAT_SETTING_KEYS`.
+   - `ProviderInstanceConfig` and `ResolvedProvider` gain
+     `toolCallParsing?: 'strict' | 'lenient' | 'loose'`.
+   - Validation in `validateProviderInstanceConfig`.
+   - `resolveProvider()` passes it through (undefined = fall back to global).
+   - `getEffectiveProviderConfig()` return type extended with `toolCallParsing?`.
+   - `parserMode` in the return object now prefers `r.toolCallParsing` over the
+     global `localToolCallParseMode` (per-provider wins, global is fallback).
+   - `getLocalToolCallParseMode()` checks `getEffectiveProviderConfig()?.toolCallParsing`
+     first so slash commands and the live parser also see the per-provider value.
+   - `providers.openai.toolCallParsing` schema entry (`enum`, `default: 'strict'`,
+     `showInDialog: false`) — appears in the provider edit dialog via the
+     schema-alias system.
+   - `ProviderDialog.tsx` — `'toolCallParsing'` added to `HOT_RELOAD_FIELDS`
+     and a dedicated `case 'toolCallParsing':` branch in `applyHotReload`.
+
+   Files touched: `packages/core/src/providers/providerRegistry.ts`,
+   `packages/core/src/config/config.ts`,
+   `packages/cli/src/config/settingsSchema.ts`,
+   `packages/cli/src/ui/components/ProviderDialog.tsx`.
+
+3. **`promptMode` default corrected to `'lite'`.** The schema entry
+   `providers.openai.promptMode.default` was `'full'`, contradicting
+   `resolveProvider()`'s runtime default of `'lite'`. Corrected so the dialog
+   label matches the actual behavior. Updated options and description to be
+   provider-neutral. Custom providers (and the hosted OpenAI provider) both work
+   fine with `'lite'` — it simply uses the compact system prompt.
+
+4. **Context limit schema vs. runtime mismatch fixed + auto-detection at add
+   time.** `providers.openai.contextLimit.default` was 128000 (correct for hosted
+   OpenAI but wrong for custom local providers that use 32768 as the runtime
+   fallback). Changed to 32768 to match `customToProviderDefinition()`. Also:
+   - `ProviderModelInfo` gains `contextLimit?: number`; `fetchProviderModels`
+     reads `max_model_len` from vLLM's `/v1/models` response.
+   - `handleAddCustom` is now async; immediately stamps `contextLimit: 32768`
+     into `settings.json`, then fires a background `fetchProviderModels` probe
+     (5 s timeout). If vLLM responds with `max_model_len`, overwrites the stamp
+     and shows "context limit auto-detected: N tokens" in the status message.
+     Fully non-blocking — the dialog returns to the menu immediately.
+
+5. **Phase references removed from user-visible strings.** "Phase 2.2" and
+   "Phase 2.3" were visible in `StatsDisplay`, `settingsSchema` (deprecated
+   label), and migration error messages. All replaced with neutral text.
+
+   Files touched: `packages/cli/src/ui/components/StatsDisplay.tsx`,
+   `packages/cli/src/config/settingsSchema.ts`,
+   `packages/cli/src/config/settings.ts`,
+   `packages/core/src/providers/providerModelDiscovery.ts`.
+
+Tests: all 58 provider dialog + command + getEffectiveProviderConfig tests
+pass. No regressions introduced.
+
+---
+
+DONE — Phase 2.4 OpenAI Responses API support (shipped):
+
+Symptom + concern: Phase 2.3.x landed full provider/registry/UX coverage for the
+OpenAI Chat Completions wire format (`POST /v1/chat/completions`), but every
+modern OpenAI reasoning model (`gpt-5`, `gpt-5-codex`, the o-series, plus the
+`gpt-oss-*` weights served locally on vLLM with `--enable-responses-api`) is
+exposed only through the **Responses API** (`POST /v1/responses`). The Responses
+endpoint has a different request shape (`input` items, top-level
+`instructions`, `tools` as bare entries, `reasoning.effort`), a different
+streaming envelope (`response.output_text.delta`, `response.output_item.*`,
+`response.function_call_arguments.delta`, `response.completed`), and an
+optional stateful chaining mechanism (`previous_response_id`) that lets the
+server keep history server-side. Without first-class support the fork could not
+talk to those models at all.
+
+Solution: introduce a new `wireFormat: 'openai-responses'` alongside the
+existing `'openai-chat'` and `'gemini'`. Hosted OpenAI gets a built-in
+`openai-responses` provider and custom providers can opt into the wire format
+via `/provider add --wire-format openai-responses`. The Chat path is
+**byte-identical** when this branch isn't selected — `LocalLlmContentGenerator`
+is untouched, the four-layer context defense (`isLocalMode()` keyed on
+`'openai-chat'` only) stays disabled for the new wire format, and all existing
+provider/dialog/hot-reload machinery continues to work for both wire formats
+through the per-wire-format schema-alias system.
+
+Decisions locked in:
+
+- **Scope:** Hosted built-in **plus** custom-provider opt-in (Option B). Custom
+  providers default to `openai-chat` for back-compat; `--wire-format` is
+  opt-in.
+- **Reasoning effort:** Two-tier system. Per-provider persistent default at
+  `providers.<id>.reasoningEffort` (enum `minimal|low|medium|high`, no default
+  → server picks) **plus** a `/reasoning` slash command for session overrides
+  + `/reasoning save <level>` to persist. Session override always wins until
+  the user clears it or restarts.
+- **Stateful chaining:** Default OFF. Per-provider opt-in via
+  `useResponseChaining: true`. When ON, `Config.lastResponseId` is sent as
+  `previous_response_id` and the request input is trimmed to only the new turn
+  + tool outputs. When OFF, the full Gemini-side history is translated each
+  turn (matches Chat behavior). The chaining ID is invalidated whenever
+  client/server history could diverge (`/clear`, `/compress`,
+  `client.setHistory()`, `client.resetChat()`, streaming errors), so a stale
+  ID never bills a wasted turn more than once.
+
+New fork-only files (Category C — no fences needed):
+
+- `packages/core/src/core/openaiResponsesContentGenerator.ts` (~1,200 LOC).
+  Implements `ContentGenerator`. Exports the pure helpers
+  `translateToolsToResponses`, `translateRequestToResponses`,
+  `responsesUsageToGemini`, `mapSseEvent`, and `trimInputForChaining` so they
+  can be unit-tested in isolation. Includes a private duplicate of the Phase
+  2.0.10 stale-socket undici dispatcher (DRY-vs-rebase-safety: we kept the
+  duplicate because the alternative `openaiHttpHelpers.ts` extraction would
+  have rewritten >30 lines inside `localLlmContentGenerator.ts`, breaking
+  Rule 10's fence discipline). Reuses the `Object.setPrototypeOf` trick from
+  `LocalLlmContentGenerator` so emitted chunks satisfy SDK getters
+  (`.text`, `.functionCalls`).
+- `packages/core/src/core/openaiResponsesContentGenerator.test.ts` —
+  ~30 unit tests covering tool/translation, every SSE event type, usage
+  mapping, the chaining state machine (full input vs. trimmed input vs.
+  cleared on error), error paths, and the no-auth-when-localhost case.
+- `packages/cli/src/ui/commands/reasoningCommand.ts` (~150 LOC). Sub-commands
+  `show`, `<minimal|low|medium|high>`, `clear`, `save <level>`. When the
+  active provider's wire format isn't `openai-responses`, every action
+  returns an actionable "this only applies to Responses-format providers"
+  message instead of silently failing — Rule 11 compliant
+  (descriptions + `hidden: false` everywhere).
+- `packages/cli/src/ui/commands/reasoningCommand.test.ts` — 15 unit tests.
+
+Touched upstream-shared files (fenced
+`// --- LOCAL FORK ADDITION (Phase 2.4) ---`):
+
+- `packages/core/src/providers/providerRegistry.ts` — extends
+  `ProviderWireFormat` union, adds `OPENAI_RESPONSES_SETTING_KEYS` (Chat-compat
+  set + `reasoningEffort`, `useResponseChaining`, MINUS `toolCallParsing`),
+  registers the `openai-responses` built-in
+  (`https://api.openai.com/v1/responses`, `gpt-5`, `400_000` ctx,
+  `OPENAI_API_KEY`), extends `CustomProviderDefinition` with optional
+  `wireFormat`, drops the hard-forced wire format in
+  `customToProviderDefinition`, extends `ProviderInstanceConfig` /
+  `ResolvedProvider` with `reasoningEffort` and `useResponseChaining`, and
+  adds validators for both.
+- `packages/core/src/core/contentGenerator.ts` — adds a
+  `wireFormat === 'openai-responses'` branch to `createContentGenerator()`
+  before the existing `isOpenAiCompat` block.
+- `packages/core/src/config/config.ts` — extends
+  `getEffectiveProviderConfig()` return shape with `reasoningEffort` +
+  `useResponseChaining`, adds `sessionReasoningOverride` field +
+  `getSessionReasoningOverride()` / `setSessionReasoningOverride()` /
+  `clearSessionReasoningOverride()`, adds `getReasoningEffort()` resolver
+  (session override → provider setting → undefined), adds `lastResponseId`
+  field + getter/setter/clearer for stateful chaining. `isLocalMode()` still
+  keys ONLY on `'openai-chat'` — verified.
+- `packages/cli/src/config/settingsSchema.ts` — adds
+  `providers.openai-responses.*` block (model, baseUrl, contextLimit,
+  promptMode, enableTools, timeout, temperature, reasoningEffort,
+  useResponseChaining), all `requiresRestart: false`.
+- `packages/cli/src/utils/settingsUtils.ts` — teaches
+  `registerCustomProviderSchemaAliases()` to clone the right base set
+  depending on each custom provider's declared `wireFormat`.
+- `packages/cli/src/ui/commands/providerCommand.ts` — `/provider add` accepts
+  optional `--wire-format <openai-chat|openai-responses>` (defaults to chat
+  for back-compat); `/provider list` groups into "Hosted (Gemini)",
+  "Hosted (OpenAI Chat Completions)", "Hosted (OpenAI Responses API)",
+  "Custom"; `/provider set` accepts `reasoningEffort` and
+  `useResponseChaining` only when the target provider's wire format is
+  `openai-responses` (clear refusal otherwise).
+- `packages/cli/src/ui/components/ProviderDialog.tsx` — adds
+  `'reasoningEffort'` and `'useResponseChaining'` to `HOT_RELOAD_FIELDS` and
+  the `applyHotReload` switch; adds a wire-format radio
+  (`openai-chat` / `openai-responses`) to the "Add custom" form.
+- `packages/cli/src/ui/components/UserIdentity.tsx` — when the active wire
+  format is `openai-responses`, renders a `Reasoning:` row showing the
+  effective effort + source (`provider default` / `session override`); when
+  chaining is active and a response id is stored, renders
+  `Chaining: on (response_<id-prefix>)`.
+- `packages/cli/src/services/BuiltinCommandLoader.ts` — registers
+  `reasoningCommand`.
+- `packages/cli/src/acp/commandHandler.ts` — registers the non-interactive
+  sub-commands (`/reasoning show`, `/reasoning <level>`, `/reasoning clear`,
+  `/reasoning save <level>`) per Rule 11.
+- `packages/cli/src/ui/hooks/useGeminiStream.ts` — invalidates
+  `lastResponseId` after `/clear`, `/compress`, history truncation, and on
+  any error response. Wrapped in fences and gated on
+  `useResponseChaining === true` so the chat path is byte-identical.
+- `packages/core/src/core/client.ts` — calls `config.clearLastResponseId()`
+  inside `setHistory()` and `resetChat()` for the same chaining-invalidation
+  reason.
+
+Translation layer (request):
+
+```text
+Gemini systemInstruction              → top-level instructions: string
+Gemini Content[role:user, text]       → { type:"message", role:"user",
+                                          content:[{type:"input_text", text}] }
+Gemini Content[role:model, text]      → { type:"message", role:"assistant",
+                                          content:[{type:"output_text", text}] }
+Gemini functionCall part              → { type:"function_call",
+                                          call_id, name, arguments: JSON_string }
+Gemini functionResponse part          → { type:"function_call_output",
+                                          call_id, output: JSON_string }
+Gemini tool declarations              → top-level tools:[{ type:"function",
+                                          name, description, parameters }]
+Per-provider temperature              → top-level temperature
+Resolved reasoningEffort              → top-level reasoning: { effort: <level> }
+useResponseChaining + stored id       → previous_response_id: <id>
+                                        + only-new-turn input
+```
+
+SSE event mapping:
+
+```text
+response.created                            → noop
+response.output_item.added(message)         → start text emit
+response.output_text.delta                  → emit text part
+response.output_item.added(reasoning)       → start reasoning emit
+response.reasoning_summary_text.delta       → emit reasoning text (mirrors
+                                              chat path's delta.reasoning)
+response.reasoning_text.delta               → same
+response.output_item.added(function_call)   → start tool-call accumulation
+response.function_call_arguments.delta      → accumulate args
+response.output_item.done(function_call)    → emit complete tool call
+response.completed                          → emit final chunk + map usage,
+                                              store response.id if chaining
+response.error                              → throw with payload, clear stored
+                                              response id if chaining
+```
+
+Tests run green for Phase 2.4:
+
+- 30 generator helper tests
+  (`openaiResponsesContentGenerator.test.ts`).
+- 15 reasoning-command tests (`reasoningCommand.test.ts`).
+- `providerRegistry.test.ts` extended with the new built-in entry,
+  custom-provider wire-format opt-in, and validators (~6 new tests).
+- `getEffectiveProviderConfig.test.ts` extended with `reasoningEffort`,
+  `useResponseChaining`, session reasoning override precedence, and
+  `lastResponseId` getter/setter/clearer (~5 new tests).
+- `providerCommand.test.ts` extended with `/provider add --wire-format`,
+  `/provider list` Chat/Responses bucketing, and `/provider set
+  reasoningEffort` + `useResponseChaining` gating (~6 new tests).
+- `UserIdentity.test.tsx` extended with two Responses-mode renders
+  (Reasoning row, session-override label, Chaining label).
+- `helpCommand.test.ts` extended to assert `/reasoning` is discoverable.
+
+65 new targeted tests added across the suites; all pass. The full repo test
+run also passes for everything Phase 2.4 touches; the residual snapshot
+failures observed in the wider run are pre-existing and unrelated to the new
+wire format (they reproduce on `main` with no Phase 2.4 changes applied).
+
+Out of scope (follow-ups, tracked in OPEN TODOS):
+
+- Per-utility-role routing of reasoning effort (e.g. always `low` for the
+  compressor) — fits TODO #1.
+- `embedContent()` on the Responses path — same constraint as Chat, throws
+  today (TODO #9 still applies).
+- Image inputs / file inputs / built-in tools (`file_search`, `web_search`)
+  — the Responses API supports these; v1 ships function-calling parity only.
+
+---
+
+DONE — Phase 2.4.6 + 2.4.7 follow-ups (model-set propagation, error visibility,
+silent-failure hardening, system-prompt override):
+
+Symptom that drove this batch: with a freshly-added OpenRouter provider users
+saw the chat "think for a bit" and then sit silent — no response, no error.
+Three independent bugs piled on top of each other:
+
+1. **`/model set` did not propagate to the request body** for OpenAI-compat
+   providers. The slash command only updated `config.model` (the cosmetic
+   value the footer reads). The OpenAI generators bake the model into their
+   constructor from `effective.model`, so the next request body still shipped
+   the OLD model. Symptom: footer flipped, wire body did not, hosted endpoints
+   like OpenRouter rejected the stale `'local-model'` placeholder with HTTP
+   400. (Phase 2.4.6.)
+
+2. **`'local-model'` placeholder leaked to hosted endpoints.** The placeholder
+   only makes sense for vLLM/Ollama where the server picks a single loaded
+   weight. On OpenAI / OpenRouter / Anthropic-via-OAI it's a routing-layer
+   foot-gun. Pre-flight check now refuses to issue the HTTP call and throws
+   a friendly client-side error when `model === 'local-model'` and the URL
+   hostname is not localhost / RFC1918 / `*.local`. IPv6 brackets stripped
+   before comparison. Symmetric implementation in both
+   `LocalLlmContentGenerator` and `OpenAIResponsesContentGenerator`.
+   (Phase 2.4.6.)
+
+3. **Silent failure on HTTP 200 with non-API content type.** The actual root
+   cause of "thinks for a bit, then nothing": OpenRouter served HTTP 200 with
+   `Content-Type: text/html` (its homepage) when the user pointed `baseUrl`
+   at the API root instead of `/chat/completions`. Our generator only checked
+   `response.ok`, then fed HTML through the SSE parser, which yielded zero
+   events and returned cleanly. No error, no chat message. Phase 2.4.7 adds
+   `assertResponseContentType()` after the HTTP-error guard in both
+   generators: 2xx with the wrong content-type now throws a clear error
+   carrying the URL, status, content-type, and a 2 KB body preview. The throw
+   rides the existing `Turn.run → handleErrorEvent → addItem(ERROR)` path so
+   the user sees it in chat. (Phase 2.4.7.)
+
+Plus three diagnostics improvements:
+
+- `Local LLM returned HTTP X` error message renamed to `Provider returned
+  HTTP X` everywhere. The generators are reused for hosted providers; the
+  old wording was misleading.
+- Existing `/tmp/gemini-local-diag.log` capture widened from `status === 400`
+  to `!response.ok`. The diagnostic value is identical for 401/403/404/
+  405/429/5xx, and hosted endpoints often surface configuration mistakes
+  (wrong URL, wrong API key, wrong model id) as non-400 responses.
+- New opt-in wire-level logger `wireLogger.ts`. When `GEMINI_WIRE_LOG=<path>`
+  is set, every OpenAI-compat HTTP request and response (URL, method, status,
+  headers, body preview) is appended NDJSON to the file. Sensitive headers
+  (`Authorization`, `X-Api-Key`, `Cookie`, `Set-Cookie`) and body patterns
+  (`sk-...`, `Bearer ...`) are redacted. Bodies are truncated to ~2 KB.
+  No-op when the env var is unset.
+
+System-prompt override (Phase 2.4.7):
+
+After the URL was fixed and OpenRouter→DeepSeek requests started succeeding,
+the model self-identified as "Google Gemini" because the upstream Gemini CLI
+system preamble mentions "Gemini CLI" and "GEMINI.md" enough that DeepSeek
+pattern-matched and adopted that persona. This is a model-side identity
+hallucination, not a routing bug — but it confuses users who picked a non-
+Gemini model on purpose.
+
+`providers.<id>.systemPromptOverride` (string) lets a custom OpenAI-compat
+provider replace the entire upstream `systemInstruction` text wholesale at
+translate time. Empty string (the default) preserves upstream behavior
+exactly. Available on both `openai-chat` and `openai-responses` wire formats;
+Gemini providers reject this knob because their wire path doesn't route
+through our translators.
+
+Caveats (in the schema doc and in the `/provider set` help): this replaces
+the *entire* base preamble — tool-use guidance, file-handling rules, and
+sandbox reminders go with it. Users opting in are explicitly choosing a
+clean prompt. GEMINI.md / project memory contents are concatenated separately
+by upstream and are *not* affected.
+
+Tests added:
+
+- 7 pre-flight model-check tests
+  (`localLlmContentGenerator.preflight.test.ts`).
+- 6 pre-flight model-check tests for Responses
+  (`openaiResponsesContentGenerator.preflight.test.ts`).
+- 6 content-type guard tests for chat (text/html on JSON path, text/html on
+  stream path, error message includes URL + body preview, application/json
+  + charset accepted, text/event-stream accepted, application/xml rejected).
+- 4 content-type guard tests for Responses (text/html JSON, text/html
+  stream, /v1/responses hint in error, text/event-stream accepted).
+- 3 system-prompt override tests (override applied, empty preserves
+  upstream, undefined effective config preserves upstream).
+- 8 `wireLogger.test.ts` tests (env-var gating, no-op when unset, header
+  redaction, body redaction with hyphens in keys, NDJSON output, body
+  truncation, line-buffered append).
+- `/model set` persistence + provider-config refresh tests
+  (`modelCommand.test.ts`).
+
+UserIdentity test fixtures updated to include the new `systemPromptOverride`
+field on the `EffectiveProviderConfig` shape (now required at the type
+level; default empty string semantically matches "no override").
+
+---
+
+CURRENT STATUS (as of Phase 2.4):
+
+The CLI is a fully functional Gemini CLI fork that supports:
+
+- **Native Gemini** (OAuth / API key / Vertex AI) via `gemini-oauth`,
+  `gemini-apikey`, `gemini-vertex` providers — upstream behavior unchanged.
+- **Any OpenAI Chat Completions endpoint** via built-in `openai` + unlimited
+  user-defined custom providers (`/provider add`,
+  `--wire-format openai-chat`, the default). Each provider persists its own
+  `model`, `baseUrl`, `contextLimit`, `promptMode`, `toolCallParsing`,
+  `temperature`, `timeout`, `enableTools`, `compressionThreshold`,
+  `preserveFraction` settings per-instance in `settings.json`.
+- **Any OpenAI Responses API endpoint** (Phase 2.4) via built-in
+  `openai-responses` + custom providers added with
+  `--wire-format openai-responses`. Reaches `gpt-5`, `gpt-5-codex`, the
+  o-series hosted, plus `gpt-oss-*` weights served locally on vLLM with
+  `--enable-responses-api`. Per-provider knobs add `reasoningEffort`
+  (`minimal|low|medium|high`) and `useResponseChaining` (default `false`).
+  Session-only overrides for reasoning effort via `/reasoning <level>`,
+  cleared via `/reasoning clear`, persisted via `/reasoning save <level>`.
+- **Hot-switchable** at runtime via `/provider use <id>` or the `/provider`
+  dialog. All switches now persist across restarts.
+- **All local LLM context management** layers (smart masking, pre-turn budget,
+  write-file ejection, adaptive threshold) active in `isLocalMode()` contexts.
+  `isLocalMode()` keys ONLY on `wireFormat === 'openai-chat'`, so the
+  Responses API path stays a clean hosted-style request/response loop with no
+  client-side defenses interfering.
+
+---
+
+OPEN TODOS (ordered by priority):
+
+**High priority:**
+
+1. **Per-utility provider/model routing.** Route `utility_compressor`,
+   `utility_summarizer`, etc. to a configurable secondary provider + model
+   instead of always using the active main provider. Especially valuable for
+   running a cheap small model for compression while a large local model handles
+   the main session.
+   Key files: `packages/core/src/context/chatCompressionService.ts`,
+   `packages/core/src/config/config.ts`, `packages/cli/src/config/settingsSchema.ts`.
+
+2. **writeFileEjection TODO #1** (eject-as-text-part). Replace the
+   `functionCall.args.content` rewrite with a full `text` part replacement so
+   the `write_file` template is removed from history entirely. Toggle:
+   `local.writeFileEjection.shape: 'inline' | 'text-replace'`.
+
+**Medium priority:**
+
+3. **writeFileEjection TODO #2** (unambiguous sentinel text). Replace the
+   `<file_written ...>` XML-ish marker with a verbose prose or hard-sentinel
+   string a model is unlikely to reproduce verbatim.
+
+4. **writeFileEjection TODO #3** (context-ratio gate + model denylist).
+   Only activate Layer 3 when the history is actually tight; add an explicit
+   opt-out list for models prone to marker mimicry.
+
+5. **Anthropic native provider adapter.** `wireFormat: 'anthropic-messages'`
+   is already reserved in the type union. The Anthropic Messages API differs
+   from OpenAI compat in several meaningful ways:
+   - `system` is a top-level string, not a message in the array.
+   - `max_tokens` is required on every request.
+   - Tools use `input_schema` instead of `parameters`.
+   - Streaming events are `content_block_delta` / `message_delta`, not
+     `choices[0].delta.content`.
+   - Auth header is `x-api-key` + `anthropic-version` (not `Authorization:
+     Bearer`).
+   - Extended thinking (`thinking: { type: 'enabled', budget_tokens: N }`)
+     is a first-class API feature with no OpenAI equivalent.
+
+   Anthropic is available via OpenRouter today (`/provider add` → custom),
+   which is good enough for most users. A native adapter is worth building
+   when you want direct billing, lower latency, or extended-thinking features
+   that OpenRouter may not expose.
+
+   Implementation path: follows the same pattern as Phase 2.4
+   (`openai-responses`). New built-in registry entry `anthropic`, new
+   `AnthropicMessagesContentGenerator`, new dispatcher branch in
+   `createContentGenerator`, optional per-provider knobs (`budgetTokens`
+   for extended thinking, `anthropicVersion` header pin). The
+   `anthropic-messages` wireFormat key is already in the union; no schema
+   changes needed beyond the new setting keys.
+
+6. **AWS Bedrock provider adapter.** Bedrock exposes most major models
+   (Claude, Titan, Llama, Mistral, Cohere) but uses a completely different
+   auth model:
+   - AWS Signature V4 request signing (not a static API key).
+   - Credentials from `~/.aws/credentials`, env vars (`AWS_ACCESS_KEY_ID`
+     + `AWS_SECRET_ACCESS_KEY`), or an IAM instance/task role.
+   - Model IDs are ARN-style (`anthropic.claude-opus-4-5-20251101-v1:0`).
+   - The Converse API (`/model/<id>/converse` /
+     `/model/<id>/converse-stream`) has an OpenAI-like shape but requires
+     AWS signing.
+
+   Today Bedrock users can run a local proxy (e.g.
+   `bedrock-access-gateway` or `LiteLLM` with Bedrock backend) that
+   presents an OpenAI-compat surface, so custom covers it indirectly.
+
+   Implementation path: new `wireFormat: 'aws-bedrock'`, new built-in
+   entry `aws-bedrock`, new auth resolver that reads AWS credential chain
+   (aws-sdk or hand-rolled SigV4), new `AwsBedrockContentGenerator` wrapping
+   the Converse API. New per-provider setting `awsRegion`. No API key stored
+   in keychain — credentials come from the standard AWS chain. `requiresApiKey`
+   would be `false`; a new `authType` (e.g. `AuthType.AWS`) may be needed
+   for the credential resolver.
+
+**Low priority:**
+
+7. **writeFileEjection TODO #4** (configurable marker style).
+
+8. ~~**Local compression routing (Phase 2.1-A / 2.1-B).**~~ **DONE (Phase 2.4.9)**
+   Fixed in `BaseLlmClient._generateWithRetry`: when `isLocalMode()`, use
+   `getLocalModel()` instead of resolving Gemini aliases. Covers
+   `chatCompressionService`, `LoopDetectionService`, and `nextSpeakerChecker`.
+
+9. **`toolCallParsing` migration from `local.toolCallParsing`** — the old global
+   setting is read as the fallback by `getLocalToolCallParseMode()`, but a new
+   user would see it in the (deprecated, hidden) global settings rather than in
+   the per-provider dialog. A migration similar to `migrateLegacyLocalSettings`
+   would stamp `providers.local-vllm.toolCallParsing` from `local.toolCallParsing`
+   if set.
+
+10. **`embedContent()` on OpenAI-compat providers.** Currently throws; only Gemini
+    paths support it.
+
+FORK-ONLY FILES (for rebase reference):
+
+New files that do not exist in upstream google-gemini/gemini-cli and should
+never be merged upstream:
+
+- `packages/core/src/core/authType.ts`
+- `packages/core/src/core/localLlmContentGenerator.ts`
+- `packages/core/src/core/openaiResponsesContentGenerator.ts` (Phase 2.4)
+- `packages/core/src/core/openaiResponsesContentGenerator.test.ts` (Phase 2.4)
+- `packages/core/src/providers/providerRegistry.ts`
+- `packages/core/src/providers/providerCredentialStorage.ts`
+- `packages/core/src/providers/providerModelDiscovery.ts`
+- `packages/core/src/config/getEffectiveProviderConfig.test.ts`
+- `packages/core/src/context/historyTruncation.ts`
+- `packages/core/src/context/localContextRecovery.ts`
+- `packages/core/src/context/localMaskingDefaults.ts`
+- `packages/core/src/context/preTurnBudget.ts`
+- `packages/core/src/context/writeFileEjection.ts`
+- `packages/core/src/context/adaptiveThreshold.ts`
+- `packages/cli/src/config/migrateLegacyLocalSettings.ts`
+- `packages/cli/src/config/migrateLegacyLocalPresets.ts`
+- `packages/cli/src/ui/commands/providerCommand.ts`
+- `packages/cli/src/ui/commands/reasoningCommand.ts` (Phase 2.4)
+- `packages/cli/src/ui/commands/reasoningCommand.test.ts` (Phase 2.4)
+- `packages/cli/src/ui/components/ProviderDialog.tsx`
+- `packages/cli/src/ui/hooks/useProviderCommand.ts`
+- `packages/cli/src/utils/settingsUtils.ts` (the registerCustomProviderSchemaAliases
+  export is fork-only; the rest of the file has upstream content)
+

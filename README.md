@@ -55,19 +55,44 @@ presets" below).
 | `gemini-vertex` | Gemini (Vertex AI) | n/a                         | Vertex ADC + project + location |
 | `openai`        | OpenAI             | `https://api.openai.com/v1` | `$OPENAI_API_KEY` (or keychain) |
 
-Need a local vLLM, llama.cpp, Ollama, or hosted OpenAI-compat endpoint? Add it
-once and it becomes a first-class provider:
+Need a local vLLM, llama.cpp, Ollama, hosted OpenAI, or a unified gateway like
+[OpenRouter](https://openrouter.ai)? Add it once and it becomes a first-class
+provider:
 
 ```text
-/provider add my-vllm --url http://127.0.0.1:8000/v1/chat/completions \
+# Local vLLM (Chat Completions)
+/provider add my-vllm \
+  --url http://127.0.0.1:8000/v1/chat/completions \
   --name "My vLLM" \
   --model Qwen/Qwen3-Coder-Next-FP8
 /provider use my-vllm
+
+# OpenRouter — one endpoint for every model
+# IMPORTANT: --url must be the full chat completions path, not just the
+# /api/v1 root. The CLI does not auto-append /chat/completions.
+/provider add openrouter \
+  --url https://openrouter.ai/api/v1/chat/completions \
+  --name "OpenRouter" \
+  --model openai/gpt-4o
+/provider use openrouter
+```
+
+To add a Responses-API provider (e.g. local `gpt-oss-20b` on vLLM with the
+`/v1/responses` endpoint enabled), pass `--wire-format openai-responses`:
+
+```text
+/provider add my-vllm-resp \
+  --wire-format openai-responses \
+  --url http://127.0.0.1:8000/v1/responses \
+  --name "My vLLM (Responses)" \
+  --model gpt-oss-20b
+/provider use my-vllm-resp
 ```
 
 `/provider add` accepts the same shape interactively from the dialog (Add
-provider → fill the form). Built-in providers (`gemini-*`, `openai`) cannot be
-removed; custom providers can be removed with `/provider remove <id>`.
+provider → fill the form). Built-in providers (`gemini-*`, `openai`,
+`openai-responses`) cannot be removed; custom providers can be removed with
+`/provider remove <id>`.
 
 ### Quick start — OpenAI (hosted)
 
@@ -95,6 +120,57 @@ gemini-local-cli
   --model Qwen/Qwen3-Coder-Next-FP8
 /provider use my-vllm
 ```
+
+### Quick start — OpenRouter (one API key for every model)
+
+[OpenRouter](https://openrouter.ai) exposes a single OpenAI-compatible endpoint
+that routes to hundreds of models (OpenAI, Anthropic, Google, Meta, Mistral,
+DeepSeek, Qwen, …). Register it exactly like any other custom provider:
+
+```bash
+gemini-local-cli
+# --url must be the full chat completions path, not the /api/v1 root.
+/provider add openrouter \
+  --url https://openrouter.ai/api/v1/chat/completions \
+  --name "OpenRouter" \
+  --model openai/gpt-4o
+/provider set openrouter key sk-or-...   # store in OS keychain
+/provider use openrouter
+```
+
+Switch models at any time without re-registering:
+
+```bash
+/provider set openrouter model anthropic/claude-opus-4-5
+/provider set openrouter model meta-llama/llama-3.3-70b-instruct
+```
+
+> **Tip:** Use `/provider models openrouter` to browse the full catalogue (300+
+> models with prices shown). Filter by price with `--max-price <n>` (USD per
+> million prompt tokens):
+>
+> ```text
+> /provider models openrouter --max-price 0     # free models only
+> /provider models openrouter --max-price 1     # ≤ $1/M prompt tokens
+> /provider models openrouter                   # full list, prices shown
+> ```
+>
+> Visit [openrouter.ai/models](https://openrouter.ai/models) to browse with
+> additional filters (context length, modality, provider).
+
+> **Tip:** Non-Gemini models routed through OpenRouter (DeepSeek, Llama, Claude,
+> etc.) sometimes self-identify as "Google Gemini" because the upstream Gemini
+> CLI system prompt mentions "Gemini CLI" and "GEMINI.md" often enough to bias
+> the model. If that bothers you, replace the system preamble:
+>
+> ```text
+> /provider set openrouter systemPromptOverride "You are a helpful coding assistant."
+> ```
+>
+> Pass an empty string to clear the override. Caveat: this drops upstream
+> tool-use guidance and sandbox reminders along with the identity bits, so only
+> opt in if you know what you're trading away. GEMINI.md / project memory is
+> unaffected.
 
 Already had `local-vllm` configured under Phase 2.2? Don't run `/provider add`
 manually — the migrator at startup automatically rewrites it as
@@ -133,6 +209,91 @@ Switching to a `gemini-*` provider triggers the upstream auth flow automatically
 — no separate `/auth` step is required. The legacy `/auth` command still works
 unchanged for re-authenticating; it just edits the same `Config.refreshAuth()`
 path that `/provider use gemini-*` invokes internally.
+
+### OpenAI Responses API support (Phase 2.4)
+
+Phase 2.4 adds first-class support for OpenAI's `/v1/responses` endpoint — the
+home of the new reasoning models (`gpt-5`, `gpt-5-codex`, `o1`, `o3`) and the
+locally-runnable `gpt-oss-20b` / `gpt-oss-120b` series. The hosted endpoint is
+wired up as the built-in `openai-responses` provider; any endpoint speaking the
+same protocol (vLLM `--enable-responses`, LM Studio, Azure Responses, etc.) can
+be added as a custom provider with `--wire-format openai-responses`.
+
+Quick start (hosted OpenAI):
+
+```bash
+gemini-local-cli
+/provider set openai-responses key sk-...
+/provider use openai-responses
+/provider set openai-responses model gpt-5-codex
+```
+
+Tested models on this fork:
+
+| Model         | Use                                          | Default reasoning |
+| ------------- | -------------------------------------------- | ----------------- |
+| `gpt-5`       | Frontier general-purpose reasoning           | `medium`          |
+| `gpt-5-codex` | Code-tuned variant; preferred for the agent  | `high`            |
+| `o1` / `o3`   | Reasoning-focused; useful for hard refactors | `medium`          |
+| `gpt-oss-20b` | Local on a single 24 GB GPU (vLLM)           | `low`             |
+
+Per-provider configuration knobs:
+
+| Setting                                          | Type / values                            | Notes                                                                            |
+| ------------------------------------------------ | ---------------------------------------- | -------------------------------------------------------------------------------- |
+| `providers.openai-responses.model`               | string                                   | E.g. `gpt-5-codex`. Defaults to `gpt-5`.                                         |
+| `providers.openai-responses.baseUrl`             | URL                                      | Override for proxies / Azure. Defaults to `https://api.openai.com/v1/responses`. |
+| `providers.openai-responses.contextLimit`        | integer                                  | Defaults to `400000` (gpt-5 family).                                             |
+| `providers.openai-responses.reasoningEffort`     | `minimal` \| `low` \| `medium` \| `high` | Persisted default. Override per-session with `/reasoning <level>`.               |
+| `providers.openai-responses.useResponseChaining` | boolean                                  | Default `false`. When `true`, the client chains via `previous_response_id`.      |
+
+`/reasoning` slash command (Phase 2.4):
+
+```text
+/reasoning                # alias for /reasoning show
+/reasoning show           # print resolved level + source
+/reasoning low            # session-only override
+/reasoning save high      # persist to providers.<active>.reasoningEffort
+/reasoning clear          # drop the session override
+```
+
+The session override and persisted setting are both honored for the active
+provider. `/reasoning` is a no-op (with a clear error message) on non-Responses
+providers.
+
+Stateful chaining (`useResponseChaining`):
+
+When enabled, the generator stores the last `response.id` and sends only the new
+turn's input + `previous_response_id` on subsequent requests instead of the full
+history. The chain is **invalidated automatically** on `/clear`, `/compress`,
+history truncation, and any streaming error so the client and server can never
+drift. Default is OFF — leave it OFF unless you have a specific reason to opt in
+(e.g. very long-running coding sessions where re-sending history dominates the
+bill).
+
+The 4-layer context defense (soft compression → force-compression →
+hard-truncation → write-file ejection) intentionally stays **disabled** for
+`openai-responses`: hosted OpenAI handles its own context window, and the
+defense was designed for Mistral-family chat-completions models on local
+hardware.
+
+Local vLLM example (`gpt-oss-20b` via the Responses API):
+
+```bash
+# Start vLLM with the Responses adapter (OpenAI-style /v1/responses):
+vllm serve openai/gpt-oss-20b \
+  --enable-responses \
+  --port 8000
+
+# Register and use it from gemini-local-cli:
+/provider add my-vllm-resp \
+  --wire-format openai-responses \
+  --url http://127.0.0.1:8000/v1/responses \
+  --name "Local gpt-oss-20b" \
+  --model gpt-oss-20b
+/provider use my-vllm-resp
+/reasoning low                              # sensible default for a 20B model
+```
 
 ### One-time migration of legacy `local-*` presets (Phase 2.3)
 

@@ -12,6 +12,9 @@ import { InitCommand } from './commands/init.js';
 import { RestoreCommand } from './commands/restore.js';
 import { AboutCommand } from './commands/about.js';
 import { HelpCommand } from './commands/help.js';
+// --- LOCAL FORK ADDITION (Phase 2.4: OpenAI Responses API) ---
+import { ReasoningCommand } from './commands/reasoning.js';
+// --- END LOCAL FORK ADDITION ---
 
 export class CommandHandler {
   private registry: CommandRegistry;
@@ -27,6 +30,9 @@ export class CommandHandler {
     registry.register(new InitCommand());
     registry.register(new RestoreCommand());
     registry.register(new AboutCommand());
+    // --- LOCAL FORK ADDITION (Phase 2.4: OpenAI Responses API) ---
+    registry.register(new ReasoningCommand());
+    // --- END LOCAL FORK ADDITION ---
     registry.register(new HelpCommand(registry));
     return registry;
   }

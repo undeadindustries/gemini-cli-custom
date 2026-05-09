@@ -111,10 +111,31 @@ export class PromptProvider {
       context.config.isLocalMode() &&
       context.config.getLocalPromptMode() !== 'full'
     ) {
+      // --- LOCAL FORK ADDITION (Phase 2.4.8: provider-aware identity) ---
+      // Forward the resolved model id and provider display name into the
+      // lite prompt so the identity line can be honest. The
+      // 'local-model' placeholder means "the server picks" (vLLM /
+      // Ollama with no explicit model setting); we normalize it to
+      // undefined so the renderer falls back to the generic "AI coding
+      // assistant" line rather than claiming to be a model called
+      // "local-model".
+      //
+      // Optional chaining on getEffectiveProviderConfig keeps this safe
+      // for the legacy-local fallback shape and any test stubs that
+      // don't implement the method.
+      const eff = context.config.getEffectiveProviderConfig?.();
+      const providerModel =
+        eff?.model && eff.model !== 'local-model' ? eff.model : undefined;
+      const providerName = eff?.displayName;
+      // --- END LOCAL FORK ADDITION ---
       return getLocalSystemPrompt(
         {
           sandboxEnabled: context.config.getSandboxEnabled(),
           isInteractive: interactiveMode,
+          // --- LOCAL FORK ADDITION (Phase 2.4.8) ---
+          providerModel,
+          providerName,
+          // --- END LOCAL FORK ADDITION ---
         },
         userMemory,
         contextFilenames,
