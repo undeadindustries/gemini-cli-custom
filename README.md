@@ -1,10 +1,12 @@
 # gemini-cli-local
 
-> **This is a private fork of
+> **This is a fork of
 > [google-gemini/gemini-cli](https://github.com/google-gemini/gemini-cli).** It
-> extends the official CLI with a "Local LLM Bypass" that routes requests to any
-> local OpenAI-compatible server (vLLM, Ollama, llama.cpp, etc.) while keeping
-> all upstream Gemini / Vertex AI paths fully intact.
+> began as a local LLM bypass — routing requests to any OpenAI-compatible server
+> (vLLM, Ollama, llama.cpp, etc.) — and has since grown into a unified provider
+> system supporting local models, OpenAI, OpenRouter, and any other
+> OpenAI-compatible hosted endpoint, while keeping all upstream Gemini / Vertex
+> AI paths fully intact.
 >
 > The binary is named `gemini-local-cli` so it coexists with a standard
 > `gemini-cli` install on the same machine.
@@ -403,8 +405,41 @@ without restarting the CLI.
 git clone <this-repo>
 cd gemini-cli
 npm install
-npm run build
+npm run build      # tsc-compiles each package into packages/*/dist/
+npm run bundle     # produces the single-file bundle at bundle/gemini.js
 ```
+
+> `npm install` triggers a bundle automatically via the `prepare` hook, so you
+> usually only need `npm run bundle` after pulling new code or finishing a
+> rebase.
+
+### Install as a direct command (`gemini-local`)
+
+This fork's `package.json` declares both `gemini` and `gemini-local-cli` as
+bins. Installing globally with `npm link` or `npm install -g .` would create a
+`gemini` symlink that **clobbers any existing upstream `@google/gemini-cli`
+install** on the same machine. To keep the standard `gemini` command intact, use
+a direct symlink under a name of your choice:
+
+```bash
+# Pick a name that doesn't collide with the upstream `gemini` binary.
+# `gemini-local` is short and unambiguous; `gemini-local-cli` also works.
+chmod +x /path/to/gemini-cli/bundle/gemini.js
+ln -sf /path/to/gemini-cli/bundle/gemini.js ~/.local/bin/gemini-local
+
+# Verify both commands resolve to different binaries:
+which gemini             # -> upstream install (untouched)
+which gemini-local       # -> ~/.local/bin/gemini-local
+gemini-local --version   # -> this fork's version
+```
+
+The symlink resolves through to the live bundle on every invocation, so
+`npm run bundle` after a `git pull` is enough to refresh the binary — no re-link
+required. Remove with `rm ~/.local/bin/gemini-local`.
+
+> If `~/.local/bin` is not on your `PATH`, either add
+> `export PATH="$HOME/.local/bin:$PATH"` to your shell rc, or substitute any
+> directory that is (e.g. `/usr/local/bin` with `sudo`).
 
 ### Run
 
@@ -415,9 +450,11 @@ npm run build
 export GEMINI_LOCAL_URL=http://127.0.0.1:8000/v1/chat/completions
 export GEMINI_LOCAL_MODEL=mistralai/Devstral-Small-2-24B-Instruct-2512
 
+# From the source tree (no install required):
 node packages/cli/dist/index.js
-# or after global npm install:
-gemini-local-cli
+
+# Or, after the symlink install above:
+gemini-local
 ```
 
 The header will confirm local mode:
@@ -723,8 +760,8 @@ All fork-only additions are fenced with
 straightforward. No upstream files have been deleted or reformatted; all changes
 are additive and gated on `isLocalMode()`.
 
-See [AGENT.md](AGENT.md) for full architectural decisions, phase history, known
-constraints, and pending TODOs.
+Architectural decisions, phase history, known constraints, and pending TODOs are
+tracked in a local `AGENT.md` file (not version-controlled).
 
 ---
 
