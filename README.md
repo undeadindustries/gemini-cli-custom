@@ -1,4 +1,4 @@
-# gemini-cli-local
+# gemini-cli-custom
 
 > **This is a fork of
 > [google-gemini/gemini-cli](https://github.com/google-gemini/gemini-cli).** It
@@ -8,17 +8,17 @@
 > OpenAI-compatible hosted endpoint, while keeping all upstream Gemini / Vertex
 > AI paths fully intact.
 >
-> The binary is named `gemini-local-cli` so it coexists with a standard
+> The binary is named `gemini-custom-cli` so it coexists with a standard
 > `gemini-cli` install on the same machine.
 
 ---
 
 ## What is different from upstream
 
-| Area                           | Upstream gemini-cli                | gemini-cli-local                                                                                                                                                                                                                            |
+| Area                           | Upstream gemini-cli                | gemini-cli-custom                                                                                                                                                                                                                           |
 | ------------------------------ | ---------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | **Backend**                    | Google Gemini / Vertex AI only     | Single unified provider registry: Gemini (OAuth / API key / Vertex), OpenAI, **plus user-defined custom OpenAI-compat providers** (vLLM, Ollama, llama.cpp, Azure, Groq, Together, …) added via `/provider add`                             |
-| **Binary name**                | `gemini`                           | `gemini-local-cli` (avoids PATH collision)                                                                                                                                                                                                  |
+| **Binary name**                | `gemini`                           | `gemini-custom-cli` (avoids PATH collision)                                                                                                                                                                                                 |
 | **Auth**                       | Google OAuth / API key / Vertex    | All upstream auth types **plus** `AuthType.LOCAL` (one mode for local + hosted OpenAI-compat); each provider declares its own `authType` in the registry                                                                                    |
 | **Provider switching**         | N/A                                | `/provider` interactive menu (switch / edit / add / remove / browse models) plus `/provider use <id>`. Switches mid-session (Gemini OAuth ↔ custom vLLM ↔ OpenAI) without restart; per-provider token usage tracked and shown in `/stats` |
 | **Custom providers**           | N/A                                | `/provider add my-vllm --url … [--model …] [--env VAR]` registers any new OpenAI-compat endpoint. Built-ins (`gemini-*`, `openai`) are non-removable                                                                                        |
@@ -102,10 +102,10 @@ provider → fill the form). Built-in providers (`gemini-*`, `openai`,
 # Option A: environment variable (no keychain required)
 export GEMINI_PROVIDER=openai
 export OPENAI_API_KEY=sk-...
-gemini-local-cli
+gemini-custom-cli
 
 # Option B: store the key in the OS keychain
-gemini-local-cli              # start the CLI first (any auth mode)
+gemini-custom-cli              # start the CLI first (any auth mode)
 /provider set openai key sk-...
 /provider use openai
 ```
@@ -115,7 +115,7 @@ gemini-local-cli              # start the CLI first (any auth mode)
 ```bash
 # Once vLLM is running on http://127.0.0.1:8000, register it as a custom
 # provider and switch to it. The id can be anything kebab-case.
-gemini-local-cli
+gemini-custom-cli
 /provider add my-vllm \
   --url http://127.0.0.1:8000/v1/chat/completions \
   --name "My vLLM" \
@@ -130,7 +130,7 @@ that routes to hundreds of models (OpenAI, Anthropic, Google, Meta, Mistral,
 DeepSeek, Qwen, …). Register it exactly like any other custom provider:
 
 ```bash
-gemini-local-cli
+gemini-custom-cli
 # --url must be the full chat completions path, not the /api/v1 root.
 /provider add openrouter \
   --url https://openrouter.ai/api/v1/chat/completions \
@@ -201,7 +201,7 @@ switch backends mid-session with `/provider use`:
 | `gemini-vertex` | gemini      | Vertex AI (ADC / project + location) |
 
 ```bash
-gemini-local-cli
+gemini-custom-cli
 /provider use gemini-oauth      # uses upstream OAuth flow (same as /auth)
 /provider use gemini-apikey     # uses $GEMINI_API_KEY
 /provider use gemini-vertex     # uses Vertex AI ADC + GOOGLE_CLOUD_PROJECT/LOCATION
@@ -224,7 +224,7 @@ be added as a custom provider with `--wire-format openai-responses`.
 Quick start (hosted OpenAI):
 
 ```bash
-gemini-local-cli
+gemini-custom-cli
 /provider set openai-responses key sk-...
 /provider use openai-responses
 /provider set openai-responses model gpt-5-codex
@@ -287,7 +287,7 @@ vllm serve openai/gpt-oss-20b \
   --enable-responses \
   --port 8000
 
-# Register and use it from gemini-local-cli:
+# Register and use it from gemini-custom-cli:
 /provider add my-vllm-resp \
   --wire-format openai-responses \
   --url http://127.0.0.1:8000/v1/responses \
@@ -338,9 +338,9 @@ run after upgrading:
 
 After migration, change settings via `/provider` (e.g.
 `/provider set local-vllm model Qwen/Qwen3-Coder-Next-FP8`) — `/local` no longer
-exists. If a `gemini-cli-local` v2.1 instance ever runs against the new settings
-file, the legacy `local.*` block is gone, so be sure to upgrade all instances
-together.
+exists. If a `gemini-cli-custom` v2.1 instance ever runs against the new
+settings file, the legacy `local.*` block is gone, so be sure to upgrade all
+instances together.
 
 ### Provider settings (`settings.json` or env vars)
 
@@ -413,9 +413,9 @@ npm run bundle     # produces the single-file bundle at bundle/gemini.js
 > usually only need `npm run bundle` after pulling new code or finishing a
 > rebase.
 
-### Install as a direct command (`gemini-local`)
+### Install as a direct command (`gemini-custom`)
 
-This fork's `package.json` declares both `gemini` and `gemini-local-cli` as
+This fork's `package.json` declares both `gemini` and `gemini-custom-cli` as
 bins. Installing globally with `npm link` or `npm install -g .` would create a
 `gemini` symlink that **clobbers any existing upstream `@google/gemini-cli`
 install** on the same machine. To keep the standard `gemini` command intact, use
@@ -423,19 +423,19 @@ a direct symlink under a name of your choice:
 
 ```bash
 # Pick a name that doesn't collide with the upstream `gemini` binary.
-# `gemini-local` is short and unambiguous; `gemini-local-cli` also works.
+# `gemini-custom` is short and unambiguous; `gemini-custom-cli` also works.
 chmod +x /path/to/gemini-cli/bundle/gemini.js
-ln -sf /path/to/gemini-cli/bundle/gemini.js ~/.local/bin/gemini-local
+ln -sf /path/to/gemini-cli/bundle/gemini.js ~/.local/bin/gemini-custom
 
 # Verify both commands resolve to different binaries:
 which gemini             # -> upstream install (untouched)
-which gemini-local       # -> ~/.local/bin/gemini-local
-gemini-local --version   # -> this fork's version
+which gemini-custom       # -> ~/.local/bin/gemini-custom
+gemini-custom --version   # -> this fork's version
 ```
 
 The symlink resolves through to the live bundle on every invocation, so
 `npm run bundle` after a `git pull` is enough to refresh the binary — no re-link
-required. Remove with `rm ~/.local/bin/gemini-local`.
+required. Remove with `rm ~/.local/bin/gemini-custom`.
 
 > If `~/.local/bin` is not on your `PATH`, either add
 > `export PATH="$HOME/.local/bin:$PATH"` to your shell rc, or substitute any
@@ -454,13 +454,13 @@ export GEMINI_LOCAL_MODEL=mistralai/Devstral-Small-2-24B-Instruct-2512
 node packages/cli/dist/index.js
 
 # Or, after the symlink install above:
-gemini-local
+gemini-custom
 ```
 
 The header will confirm local mode:
 
 ```
-gemini-cli-local v1.0.0 (Gemini CLI v0.40.0-nightly...)
+gemini-cli-custom v1.0.0 (Gemini CLI v0.40.0-nightly...)
   Authenticated with local /auth
     URL:     http://127.0.0.1:8000/v1/chat/completions
     Model:   mistralai/Devstral-Small-2-24B-Instruct-2512
@@ -526,7 +526,7 @@ Change the mode at any time without restarting via `/provider` (the
 
 ### Tested models (DGX Spark)
 
-The following combinations were exercised with **gemini-cli-local** on an
+The following combinations were exercised with **gemini-cli-custom** on an
 **NVIDIA DGX Spark** (local vLLM). Use them as a reference for flags and context
 limits; your hardware may need different `--max-model-len` or memory settings.
 
@@ -540,7 +540,7 @@ limits; your hardware may need different `--max-model-len` or memory settings.
 
 #### Recommended models (latest verified on DGX Spark, 128 GB unified memory)
 
-These configurations were end-to-end verified with **gemini-cli-local**:
+These configurations were end-to-end verified with **gemini-cli-custom**:
 streaming responses, reasoning isolation, and multi-turn tool dispatch all
 behave correctly. Pair the vLLM flags with the matching
 `~/.gemini/settings.json` values for best results.

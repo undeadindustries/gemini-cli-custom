@@ -11,7 +11,7 @@
   "main": "dist/index.js",
   "bin": {
     "gemini": "dist/index.js",
-    "gemini-local-cli": "dist/index.js"
+    "gemini-custom-cli": "dist/index.js"
   },
   "scripts": {
     "build": "node ../../scripts/build_package.js",

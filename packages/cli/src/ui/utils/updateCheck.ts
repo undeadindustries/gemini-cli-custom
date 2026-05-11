@@ -30,7 +30,7 @@ export interface UpdateObject {
 }
 
 // --- LOCAL FORK ADDITION (GitHub-only update check) ---
-// This fork ships under its own binary name (`gemini-cli-local`) and its own
+// This fork ships under its own binary name (`gemini-cli-custom`) and its own
 // version axis (`LOCAL_CLI_VERSION`). It is never installed from npm, so the
 // upstream `latest-version` / `npm install -g @google/gemini-cli@…` path is
 // unreachable in practice and produces a confusing "Automatic update failed"

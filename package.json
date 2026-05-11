@@ -85,7 +85,7 @@
   },
   "bin": {
     "gemini": "bundle/gemini.js",
-    "gemini-local-cli": "bundle/gemini.js"
+    "gemini-custom-cli": "bundle/gemini.js"
   },
   "files": [
     "bundle/",

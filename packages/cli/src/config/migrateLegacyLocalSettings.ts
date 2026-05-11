@@ -12,7 +12,7 @@
 // the new shape.
 //
 // Why "local-vllm" specifically:
-//   The legacy `local.*` block was the gemini-cli-local fork's vLLM /
+//   The legacy `local.*` block was the gemini-cli-custom fork's vLLM /
 //   llama.cpp entry point. The `local-vllm` registry preset has the
 //   matching defaults (port 8000, OpenAI-chat wire format, no API key).
 //

@@ -33,9 +33,9 @@ vi.mock('@google/gemini-cli-core', () => ({
     preview: 1,
     stable: 2,
   },
-  LOCAL_CLI_NAME: 'gemini-cli-local',
+  LOCAL_CLI_NAME: 'gemini-cli-custom',
   LOCAL_CLI_VERSION: '1.0.0',
-  LOCAL_CLI_REPO: 'undeadindustries/gemini-cli',
+  LOCAL_CLI_REPO: 'undeadindustries/gemini-cli-custom',
 }));
 
 /**
@@ -91,7 +91,7 @@ describe('checkForUpdates (GitHub-only fork path)', () => {
     expect(fetchMock).toHaveBeenCalledTimes(1);
     const calledUrl = fetchMock.mock.calls[0][0] as string;
     expect(calledUrl).toBe(
-      'https://api.github.com/repos/undeadindustries/gemini-cli/releases/latest',
+      'https://api.github.com/repos/undeadindustries/gemini-cli-custom/releases/latest',
     );
   });
 
@@ -101,7 +101,7 @@ describe('checkForUpdates (GitHub-only fork path)', () => {
     expect(result).not.toBeNull();
     expect(result?.update.current).toBe('1.0.0');
     expect(result?.update.latest).toBe('1.1.0');
-    expect(result?.update.name).toBe('gemini-cli-local');
+    expect(result?.update.name).toBe('gemini-cli-custom');
     expect(result?.message).toContain('1.0.0 → 1.1.0');
     expect(result?.message).toContain('git pull');
   });

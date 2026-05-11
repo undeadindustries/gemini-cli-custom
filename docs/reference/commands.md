@@ -236,7 +236,7 @@ Slash commands provide meta-level control over the CLI itself.
 
 ### `/local`
 
-> Fork-only command (gemini-local-cli). Configures the local LLM bypass
+> Fork-only command (gemini-custom-cli). Configures the local LLM bypass
 > (OpenAI-compatible endpoint, e.g. vLLM on `http://127.0.0.1:8000`) and the
 > Phase 2.0 smart-context knobs.
 
@@ -287,7 +287,7 @@ Slash commands provide meta-level control over the CLI itself.
 
 ### `/provider`
 
-> Fork-only command (gemini-local-cli). Configures hosted LLM providers (OpenAI
+> Fork-only command (gemini-custom-cli). Configures hosted LLM providers (OpenAI
 > in Phase 2.1; Qwen / Kimi / DeepSeek / Groq / OpenRouter / Together /
 > Fireworks / Mistral / xAI added in follow-ups). Reuses the same
 > OpenAI-compatible content generator that powers `/local`, with Bearer auth and
